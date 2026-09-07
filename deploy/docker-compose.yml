@@ -1,0 +1,45 @@
+# OJ 开发环境编排：postgres / redis / go-judge 沙箱
+# api 与 judge 本地直接跑（python venv），生产阶段再容器化
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: oj
+      POSTGRES_PASSWORD: oj_password
+      POSTGRES_DB: oj
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oj"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # 判题节点（nsjail 沙箱，主动外连 API 网关 gRPC）
+  judge-node:
+    build:
+      context: ..
+      dockerfile: deploy/judge-node.Dockerfile
+    environment:
+      SERVER_ADDRESS: "host.docker.internal:50051"
+      SERVER_TOKEN: "dev-judge-token"
+    privileged: true
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:

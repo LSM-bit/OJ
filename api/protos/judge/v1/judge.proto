@@ -1,0 +1,143 @@
+// OJ 判题协议 v1
+//
+// 架构：判题节点（judge-node）主动外连 API 端 gRPC 网关（穿 NAT，节点无需公网 IP）。
+// 节点通过 bidi 流 Connect 注册并保活；网关下发 SubmitJob；节点回传 JudgeResult。
+// 测试数据：节点首次遇到 (problem_id, data_version) 时经 FetchProblemData 拉取并缓存。
+
+syntax = "proto3";
+
+package oj.judge.v1;
+
+option go_package = "oj/gen/oj/judge/v1;judgev1";
+
+// ============ 连接与注册 ============
+
+service JudgeGateway {
+  // 双向流：节点上线后一直挂着，收任务、发结果/心跳
+  rpc Connect(stream NodeMessage) returns (stream ServerMessage);
+
+  // 拉取题目测试数据（文件分块流），节点用 x-node-token 认证
+  rpc FetchProblemData(ProblemDataRequest) returns (stream FileChunk);
+}
+
+message Register {
+  string token = 1;        // 与网关侧配置的 token 列表比对
+  string node_id = 2;      // 留空由网关生成
+  string name = 3;         // 展示名
+  int32 capacity = 4;      // 并发判题容量
+  string version = 5;      // 节点版本，兼容性检查
+}
+
+message RegisterAck {
+  string node_id = 1;
+  int32 heartbeat_interval_seconds = 2;
+}
+
+message Heartbeat {
+  int32 running_tasks = 1;
+  double cpu_usage = 2;    // 0-100
+  double memory_usage = 3; // 0-100
+}
+
+// ============ 判题任务 ============
+
+message ResourceLimits {
+  int32 time_limit_ms = 1;
+  int32 memory_limit_mb = 2;
+  int32 output_limit_kb = 3;   // 默认 1024
+  int32 process_limit = 4;     // 默认 32
+  int32 cpu_cores = 5;         // 默认 1
+}
+
+// 一个测试点（文件在题目数据目录 cases/{test_case_id}.in/.out）
+message TestCase {
+  string test_case_id = 1;
+  int32 score = 2;             // OI 赛制分值
+}
+
+message SubmitJob {
+  string submission_id = 1;
+  string language = 2;         // python3.12 / cpp17 / c17 / java21
+  bytes code = 3;
+  ResourceLimits limits = 4;
+  string problem_id = 5;
+  string data_version = 6;     // 数据更新即失效节点缓存
+  bool spj = 7;                // 预留：特判
+  repeated TestCase cases = 8;
+  bool stop_on_failure = 9;    // ACM 赛制：首个非 AC 测试点后短路
+}
+
+message CaseResult {
+  string test_case_id = 1;
+  string status = 2;           // accepted / wrong_answer / time_limit_exceeded /
+                               // memory_limit_exceeded / output_limit_exceeded /
+                               // runtime_error / compile_error / system_error
+  int32 time_used_ms = 3;
+  int32 memory_used_kb = 4;
+  int32 score = 5;             // 网关按通过比例派生；SPJ 时节点回填
+  bytes output = 6;            // 仅 WA 时截断回传（差异定位）
+}
+
+message JudgeResult {
+  string submission_id = 1;
+  string status = 2;           // 整题判定：最严重测试点状态
+  int32 score = 3;
+  int32 time_used_ms = 4;      // 取最大单点耗时
+  int32 memory_used_kb = 5;
+  string error_message = 6;    // CE 时回传编译器 stderr（截断 8KB）
+  repeated CaseResult cases = 7;
+}
+
+// 用户自测（在线 IDE 运行，不比对、不落库）
+message RunCodeJob {
+  string request_id = 1;
+  string language = 2;
+  bytes code = 3;
+  bytes input = 4;
+  ResourceLimits limits = 5;
+}
+
+message RunCodeResult {
+  string request_id = 1;
+  string status = 2;
+  bytes output = 3;
+  string error_message = 4;
+  int32 time_used_ms = 5;
+  int32 memory_used_kb = 6;
+}
+
+message CancelJob {
+  string submission_id = 1;
+}
+
+// ============ 信封 ============
+
+message NodeMessage {
+  oneof payload {
+    Register register = 1;
+    Heartbeat heartbeat = 2;
+    JudgeResult result = 3;
+    RunCodeResult run_code_result = 4;
+  }
+}
+
+message ServerMessage {
+  oneof payload {
+    RegisterAck ack = 1;
+    SubmitJob job = 2;
+    CancelJob cancel = 3;
+    RunCodeJob run_code = 4;
+  }
+}
+
+// ============ 题目数据同步 ============
+
+message ProblemDataRequest {
+  string problem_id = 1;
+  string data_version = 2;
+}
+
+message FileChunk {
+  string path = 1;      // 相对路径，如 "cases/tc0.in"、"manifest.json"
+  bytes content = 2;
+}

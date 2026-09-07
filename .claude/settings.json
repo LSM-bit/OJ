@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker tag *)",
+      "Bash(cp /e/Project/OJ/judge/Dockerfile /e/Project/OJ/deploy/judge-node.Dockerfile)",
+      "Bash(sed -i 's|COPY judge_node/ ./judge_node/|COPY judge/judge_node/ ./judge_node/|; s|COPY deploy/nsjail.cfg /etc/oj/nsjail.cfg|COPY deploy/nsjail.cfg /etc/oj/nsjail.cfg|' /e/Project/OJ/deploy/judge-node.Dockerfile)",
+      "Bash(git ls-remote *)"
+    ]
+  }
+}

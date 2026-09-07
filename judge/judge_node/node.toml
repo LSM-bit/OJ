@@ -1,0 +1,15 @@
+# OJ 判题节点配置
+# 环境变量可覆盖：SERVER_ADDRESS / SERVER_TOKEN
+
+[server]
+address = "127.0.0.1:50051"   # API 端 gRPC 网关
+token = "dev-judge-token"
+
+[node]
+id = ""                        # 留空自动生成
+name = ""                      # 展示名，留空用主机名
+capacity = 2                   # 并发判题容量
+
+[paths]
+workspace = "/workspace"       # 判题临时工作区（容器内）
+data_cache = "/cache"          # 题目数据缓存
