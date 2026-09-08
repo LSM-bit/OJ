@@ -39,6 +39,19 @@ class SubmissionCreate(BaseModel):
     problem_id: int
     language: str = Field(pattern="^(python3\\.12|cpp17|c17|java21)$")
     code: str = Field(min_length=1, max_length=100_000)
+    # 题单上下文：题目可见性跟随题单（在题单内做私有题时携带）
+    playlist_id: int | None = None
+
+
+class RunCodeRequest(BaseModel):
+    """用户自测请求：运行代码 + 自定义 stdin，不比对、不落库"""
+    problem_id: int | None = None   # 提供时用题目限制，否则默认限制
+    language: str = Field(pattern="^(python3\\.12|cpp17|c17|java21)$")
+    code: str = Field(min_length=1, max_length=100_000)
+    stdin: str = Field(default="", max_length=64_000)
+    # 载体上下文：私有题在题单/比赛内自测时携带（仅用于取题目限制）
+    playlist_id: int | None = None
+    contest_id: int | None = None
 
 
 class CaseResultOut(BaseModel):
@@ -71,14 +84,33 @@ async def create_submission(
     user: User = CurrentUser,
 ):
     p = await db.get(Problem, req.problem_id)
-    if p is None or not p.is_public:
+    if p is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
+    # 可见性：题目本身公开，或通过题单间接授权（题单可见 → 题单内题目可提交）
+    if not p.is_public:
+        from app.models import OwnerType, Playlist, PlaylistProblem
+        from app.services.access import can_view
+        allowed = False
+        if req.playlist_id is not None:
+            pl = await db.get(Playlist, req.playlist_id)
+            if (pl is not None
+                    and await can_view(db, user, pl.owner_type, pl.owner_id, pl.is_public)):
+                link = await db.scalar(
+                    select(PlaylistProblem.id).where(
+                        PlaylistProblem.playlist_id == pl.id,
+                        PlaylistProblem.problem_id == p.id))
+                allowed = link is not None
+        if not allowed and p.owner_type == OwnerType.USER and p.owner_id == user.id:
+            allowed = True  # 自己的题（出题人自测草稿）
+        if not allowed:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
 
     sub = Submission(
         user_id=user.id,
         problem_id=p.id,
         language=req.language,
         code_key=f"submissions/{uuid.uuid4().hex}",  # 二期改对象存储；DB 暂存 code 由 judge 传文本
+        code=req.code,  # 源码留存，支持后台重判
         status=SubmissionStatus.WAITING,
     )
     db.add(sub)
@@ -126,6 +158,59 @@ async def create_submission(
     return _to_out(sub)
 
 
+@router.post("/run")
+async def run_code(
+    req: RunCodeRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = CurrentUser,
+):
+    """自测：在沙箱运行一次代码，返回 stdout/stderr，不落库不计分"""
+    time_limit_ms, memory_limit_mb = 5000, 256
+    if req.problem_id is not None:
+        # 题目详情需带载体上下文做可见性校验（私有题在题单/比赛内自测）
+        from app.services.access_deps import problem_view_allowed
+        p = await db.get(Problem, req.problem_id)
+        if p is not None and not await problem_view_allowed(
+            db, user, p, req.playlist_id, req.contest_id
+        ):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
+        if p is not None:
+            time_limit_ms = min(p.config.get("time_limit_ms", 2000), 15_000)
+            memory_limit_mb = p.config.get("memory_limit_mb", 256)
+
+    job = judge_pb2.RunCodeJob(
+        request_id=uuid.uuid4().hex,
+        language=req.language,
+        code=req.code.encode(),
+        input=req.stdin.encode(),
+        limits=judge_pb2.ResourceLimits(
+            time_limit_ms=time_limit_ms,
+            memory_limit_mb=memory_limit_mb,
+            output_limit_kb=256,
+        ),
+    )
+    try:
+        result = await get_gateway().run_code(job, timeout=60)
+    except RuntimeError as e:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from e
+
+    return {
+        "status": result.status,
+        "status_label": RUN_STATUS_LABEL.get(result.status, result.status),
+        "output": result.output.decode("utf-8", errors="replace"),
+        "error_message": result.error_message,
+        "time_used_ms": result.time_used_ms,
+        "memory_used_kb": result.memory_used_kb,
+    }
+
+
+RUN_STATUS_LABEL = {
+    "finished": "运行完成", "runtime_error": "运行错误", "time_limit_exceeded": "超时",
+    "memory_limit_exceeded": "超内存", "output_limit_exceeded": "输出超限",
+    "compile_error": "编译错误", "system_error": "系统错误",
+}
+
+
 def _to_out(sub: Submission) -> SubmissionOut:
     return SubmissionOut(
         id=sub.id, problem_id=sub.problem_id, language=sub.language,
@@ -154,6 +239,7 @@ async def submission_detail(
     db: AsyncSession = Depends(get_db),
     user: User = CurrentUser,
 ):
+    """提交详情：本人或 ADMIN 可见，含测试点明细与错误信息"""
     sub = await db.get(Submission, submission_id)
     if sub is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "提交不存在")
@@ -163,6 +249,7 @@ async def submission_detail(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "无权查看该提交")
     out = _to_out(sub)
     detail = sub.detail or {}
-    # 非管理员隐藏具体输出细节（防攻击/防抄题）
+    # 源码仅本人/ADMIN 可见（旧提交 code 为 NULL）
     return {**out.model_dump(), "detail": detail.get("cases", []),
+            "code": sub.code if is_owner or is_admin else None,
             "error_message": detail.get("error_message", "") if is_owner or is_admin else ""}

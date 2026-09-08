@@ -1,9 +1,12 @@
-"""认证依赖：当前用户 / 权限校验（RBAC）"""
+"""认证依赖：当前用户 / 权限校验
+
+角色只剩 USER / ADMIN：出题、建赛等创作权限放开给所有登录用户，
+资源级权限（owner/团队管理权）见 services/access.py；/admin/* 整组走 require_admin。
+"""
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt as jose_jwt
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -31,22 +34,22 @@ async def get_current_user(
     return user
 
 
-def require_role(*roles: UserRole):
-    """路由依赖：require_role(UserRole.ADMIN) 等"""
-    allowed = {r.value for r in roles}
-
-    async def checker(user: User = Depends(get_current_user)) -> User:
-        if user.role.value not in allowed and user.role != UserRole.ADMIN:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "权限不足")
-        return user
-
-    return checker
-
-
 # 常用依赖
 CurrentUser = Depends(get_current_user)
-ProblemSetter = Depends(require_role(UserRole.PROBLEM_SETTER, UserRole.CONTEST_ADMIN, UserRole.ADMIN))
-Admin = Depends(require_role(UserRole.ADMIN))
+
+
+async def require_admin(user: User = Depends(get_current_user)) -> User:
+    """后台整组强校验：仅 ADMIN（/admin/* 路由组挂 Depends(require_admin)）"""
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "需要管理员权限")
+    return user
+
+
+# 出题/建赛已放开给所有登录用户（原 PROBLEM_SETTER/CONTEST_ADMIN 角色废弃）；
+# 保留两个兼容依赖别名，均为「仅要求登录」
+ProblemSetterDep = CurrentUser
+ContestAdminDep = CurrentUser
+ProblemSetter = ProblemSetterDep
 
 
 async def get_optional_user(

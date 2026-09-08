@@ -5,7 +5,11 @@ import 'element-plus/dist/index.css'
 import 'katex/dist/katex.min.css'
 import App from './App.vue'
 import router from './router'
+import { setupCodeCopy } from './utils/copyCodeHandler'
 import './style.css'
+
+// 题面代码块「复制」按钮的全局事件委托（各页面 v-html 内容通用）
+setupCodeCopy()
 
 const app = createApp(App)
 app.use(createPinia())

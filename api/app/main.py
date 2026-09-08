@@ -2,13 +2,16 @@
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.judge_gateway.server import get_gateway, start_grpc_server, stop_grpc_server
-from app.routers import problems, submissions, users
+from app.routers import admin, contests, misc, playlists, problems, submissions, teams, users
+from app.utils.json_response import BigIdJSONResponse
 
 logging.basicConfig(level=logging.INFO)
 
@@ -20,15 +23,32 @@ async def lifespan(app: FastAPI):
     await stop_grpc_server()
 
 
-app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title=settings.app_name,
+    version="0.1.0",
+    lifespan=lifespan,
+    # 雪花 ID 超出 JS Number 安全范围（2^53-1），默认响应类把大整数转字符串
+    default_response_class=BigIdJSONResponse,
+)
 
 app.include_router(users.router)
 app.include_router(problems.router)
 app.include_router(submissions.router)
+app.include_router(contests.router)
+app.include_router(teams.router)
+app.include_router(playlists.router)
+app.include_router(misc.router)
+app.include_router(admin.router)
+
+# 用户头像静态服务：{data 根目录}/avatars → /static/avatars/*（登录后浏览器直接 GET，无鉴权）
+_static_avatars = Path(settings.problem_data_dir).parent / "avatars"
+_static_avatars.mkdir(parents=True, exist_ok=True)
+app.mount("/static/avatars", StaticFiles(directory=str(_static_avatars)), name="avatars")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    # localhost 与 127.0.0.1 都放行（浏览器视其为不同源）
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -47,38 +67,3 @@ async def judge_nodes() -> dict:
     gw = get_gateway()
     online = [n.node_id for n in gw.nodes.values() if n.out_stream is not None]
     return {"online_nodes": len(online), "nodes": online}
-
-
-@app.post("/dev/smoke-judge")
-async def smoke_judge() -> dict:
-    """开发用：判一道 A+B（阶段 1 加鉴权后移除）"""
-    from app.judge_gateway.gen.judge.v1 import judge_pb2
-    from app.services.problem_data import put_example_data
-
-    code = "s = input().split()\nprint(int(s[0]) + int(s[1]))\n"
-    await put_example_data("1", [("tc0", "1 2", "3"), ("tc1", "10 20", "30")])
-
-    job = judge_pb2.SubmitJob(
-        submission_id="smoke-1",
-        language="python3.12",
-        code=code.encode(),
-        limits=judge_pb2.ResourceLimits(
-            time_limit_ms=2000, memory_limit_mb=256, output_limit_kb=1024, process_limit=32
-        ),
-        problem_id="1",
-        data_version="v1",
-        cases=[judge_pb2.TestCase(test_case_id="tc0", score=10),
-               judge_pb2.TestCase(test_case_id="tc1", score=10)],
-        stop_on_failure=False,
-    )
-    gw = get_gateway()
-    result = await gw.submit(job, timeout=60)
-    return {
-        "status": result.status,
-        "score": result.score,
-        "time_used_ms": result.time_used_ms,
-        "error_message": result.error_message,
-        "cases": [{"id": c.test_case_id, "status": c.status,
-                   "time_ms": c.time_used_ms, "mem_kb": c.memory_used_kb}
-                  for c in result.cases],
-    }

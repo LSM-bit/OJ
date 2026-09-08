@@ -60,6 +60,11 @@ async function submit() {
 </script>
 
 <style scoped>
-.login { display: flex; justify-content: center; padding-top: 60px; }
+.login {
+  height: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
 .card { width: 400px; }
 </style>

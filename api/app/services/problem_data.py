@@ -53,11 +53,14 @@ async def write_problem_data(problem_id: str, data_version: str, files: dict[str
     tmp.rename(root)
 
 
-async def put_example_data(problem_id: str, cases: list[tuple[str, str, str]]) -> None:
-    """快速写入示例数据：cases = [(case_id, input, output)]（开发/自测用）"""
-    manifest = {"cases": [{"id": cid, "score": 10} for cid, _, _ in cases]}
+async def put_example_data(
+    problem_id: str, cases: list[tuple[str, str, str, int] | tuple[str, str, str]]
+) -> None:
+    """快速写入示例数据：cases = [(case_id, input, output, score?)]（开发/自测用）"""
+    manifest = {"cases": [{"id": c[0], "score": (c[3] if len(c) > 3 else 10)} for c in cases]}
     files = {"manifest.json": json.dumps(manifest).encode()}
-    for cid, inp, out in cases:
+    for c in cases:
+        cid, inp, out = c[0], c[1], c[2]
         files[f"cases/{cid}.in"] = inp.encode()
         files[f"cases/{cid}.out"] = out.encode()
     await write_problem_data(problem_id, "v1", files)

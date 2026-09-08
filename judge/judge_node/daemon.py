@@ -5,6 +5,7 @@
 
 import argparse
 import asyncio
+import contextlib
 import base64
 import json
 import logging
@@ -29,6 +30,10 @@ STATUS_HIGHEST_SEVERITY = (
     "memory_limit_exceeded", "output_limit_exceeded", "runtime_error", "wrong_answer",
 )
 
+# 重连退避：失败后按 1s 起步指数增长，封顶 30s（连接成功后清零）
+RECONNECT_BASE_SECONDS = 1.0
+RECONNECT_MAX_SECONDS = 30.0
+
 
 def aggregate_status(statuses: list[str]) -> str:
     """整题判定 = 最严重的测试点状态；全 AC 才 accepted"""
@@ -47,8 +52,23 @@ class NodeDaemon:
         self.cache = ProblemDataCache(Path(cfg.paths.data_cache))
         self.semaphore = asyncio.Semaphore(cfg.node.capacity)
         self.running_tasks = 0
+        self.backoff = RECONNECT_BASE_SECONDS  # 当前重连退避时长
 
     async def run(self):
+        """主循环：连接 → 服务 → 断开后指数退避重连（1s→2s→4s...封顶 30s）"""
+        while True:
+            try:
+                await self._run_once()
+            except grpc.aio.AioRpcError as e:
+                log.error("连接断开: %s，%.0fs 后重连",
+                          e.code(), min(self.backoff, RECONNECT_MAX_SECONDS))
+            except Exception:  # noqa: BLE001 未知异常也退避重连，避免进程退出
+                log.exception("节点运行异常，%.0fs 后重连",
+                              min(self.backoff, RECONNECT_MAX_SECONDS))
+            await asyncio.sleep(min(self.backoff, RECONNECT_MAX_SECONDS))
+            self.backoff = min(self.backoff * 2, RECONNECT_MAX_SECONDS)
+
+    async def _run_once(self):
         channel = grpc.aio.insecure_channel(self.cfg.server.address)
         stub = judge_pb2_grpc.JudgeGatewayStub(channel)
         self.outbox: asyncio.Queue = asyncio.Queue(64)
@@ -74,17 +94,17 @@ class NodeDaemon:
                 if server_msg.HasField("ack"):
                     log.info("注册成功 node_id=%s 心跳=%ss",
                              server_msg.ack.node_id, server_msg.ack.heartbeat_interval_seconds)
+                    self.backoff = RECONNECT_BASE_SECONDS  # 曾成功注册 → 重置退避
                 elif server_msg.HasField("job"):
                     asyncio.create_task(self._execute_job(stub, server_msg.job))
                 elif server_msg.HasField("run_code"):
                     asyncio.create_task(self._execute_run_code(server_msg.run_code))
                 elif server_msg.HasField("cancel"):
                     pass  # 一期暂不支持取消
-        except grpc.aio.AioRpcError as e:
-            log.error("连接断开: %s，5s 后重连", e.code())
         finally:
-            heartbeat_task.cancel()
-
+            with contextlib.suppress(asyncio.CancelledError):
+                heartbeat_task.cancel()
+                await heartbeat_task
     async def _heartbeat_loop(self, stub):
         while True:
             await asyncio.sleep(10)
@@ -139,7 +159,8 @@ class NodeDaemon:
             })
         status = aggregate_status([r.status for r in results])
         error_message = ""
-        if status == "compile_error":
+        if status in ("compile_error", "runtime_error"):
+            # 编译错误/运行错误附带 stderr 帮助定位（TLE/MLE 等资源超限不需要）
             error_message = results[0].stderr.decode("utf-8", errors="replace")[:8000]
         max_time = max((r.time_used_ms for r in results), default=0)
         max_mem = max((r.memory_used_kb for r in results), default=0)

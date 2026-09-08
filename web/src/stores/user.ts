@@ -7,6 +7,7 @@ export interface UserInfo {
   email: string
   role: string
   rating: number
+  avatar: string | null
 }
 
 export const useUserStore = defineStore('user', {
@@ -18,6 +19,11 @@ export const useUserStore = defineStore('user', {
     isLoggedIn: (s) => !!s.token,
   },
   actions: {
+    async fetchMe() {
+      // 有 token 但内存里没有用户信息（如刷新页面后）时拉取
+      if (!this.token || this.user) return
+      this.user = await api.get('/users/me')
+    },
     async login(username: string, password: string) {
       const data: any = await api.post('/users/login', { username, password })
       this.token = data.access_token

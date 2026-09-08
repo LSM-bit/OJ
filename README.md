@@ -20,6 +20,10 @@ docs/    项目计划、API 文档、判题规则
 
 ## 本地开发环境启动
 
+Windows 下一键启动：双击根目录 [run.bat](run.bat)（或命令行执行；`run.bat stop` 停容器）。
+
+手动启动：
+
 ```bash
 # 1. 基础设施（postgres + redis + go-judge 沙箱）
 cd deploy && docker compose up -d

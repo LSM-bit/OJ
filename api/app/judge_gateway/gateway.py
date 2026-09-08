@@ -52,8 +52,32 @@ class JudgeGatewayServicer(judge_pb2_grpc.JudgeGatewayServicer):
         finally:
             self.pending.pop(job.submission_id, None)
 
+    async def run_code(self, job: judge_pb2.RunCodeJob, timeout: float = 60.0) -> judge_pb2.RunCodeResult:
+        """用户自测：单次运行代码，不比对不落库"""
+        fut = asyncio.get_running_loop().create_future()
+        self.pending[job.request_id] = fut  # pending 共用：request_id 与 submission_id 空间隔离
+        await self._dispatch_run_code(job)
+        try:
+            return await asyncio.wait_for(fut, timeout)
+        finally:
+            self.pending.pop(job.request_id, None)
+
     async def node_count(self) -> int:
         return sum(1 for n in self.nodes.values() if n.out_stream is not None)
+
+    def snapshot(self) -> dict:
+        """网关只读快照（/admin/judges 用）：节点列表 + 队列深度，不产生 gRPC 往返"""
+        loop = asyncio.get_running_loop().time()
+        nodes = [{
+            "node_id": n.node_id,
+            "name": n.name,
+            "capacity": n.capacity,
+            "running": n.running,
+            "online": n.out_stream is not None,
+            "last_seen_seconds_ago": round(loop - n.last_seen, 1) if n.last_seen else None,
+        } for n in self.nodes.values()]
+        return {"nodes": nodes, "queue_length": len(self.waiting_jobs),
+                "pending_count": len(self.pending)}
 
     # ---------- 内部 ----------
 
@@ -67,6 +91,15 @@ class JudgeGatewayServicer(judge_pb2_grpc.JudgeGatewayServicer):
         self.waiting_jobs.append(job)
         # 有排队的任务时顺便唤醒一轮调度
         asyncio.get_running_loop().call_soon(self._try_redistribute)
+
+    async def _dispatch_run_code(self, job) -> None:
+        """自测任务下发；无可用节点直接报错（不排队，自测要求低延迟）"""
+        for node in self.nodes.values():
+            if node.out_stream is not None and node.running < node.capacity:
+                node.running += 1
+                await node.out_stream.put(judge_pb2.ServerMessage(run_code=job))
+                return
+        raise RuntimeError("没有可用的判题节点")
 
     def _try_redistribute(self) -> None:
         while self.waiting_jobs:
@@ -145,7 +178,9 @@ class JudgeGatewayServicer(judge_pb2_grpc.JudgeGatewayServicer):
                     self._resolve(msg.result)
                     self._try_redistribute()
                 elif msg.HasField("run_code_result"):
+                    node.running = max(0, node.running - 1)
                     self._resolve_run_code(msg.run_code_result)
+                    self._try_redistribute()
         except Exception:  # noqa: BLE001 节点断开属正常生命周期
             pass
 

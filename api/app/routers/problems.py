@@ -1,7 +1,14 @@
-"""题目路由：列表 / 详情 / 创建（出题人）/ 数据包上传"""
+"""题目路由：列表 / 详情 / 创建（出题人）/ 数据包上传 / 用例管理 / 标程验证 / 发布
+
+三步出题流程（前端向导）：
+  1. 题面（基本信息 + Markdown 描述）
+  2. 样例与用例（上传数据包 manifest + cases/*.in|*.out，可单独补传样例）
+  3. 测试（上传/指定标程，跑全部用例比对，全部通过后才能发布公开）
+"""
 
 import json
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import (
     APIRouter,
@@ -17,8 +24,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import Problem, Submission, SubmissionStatus, Testcase, User, UserRole
-from app.services.auth import Admin, CurrentUser, ProblemSetter
+from app.judge_gateway.gen.judge.v1 import judge_pb2
+from app.judge_gateway.server import get_gateway
+from app.models import OwnerType, Problem, Submission, SubmissionStatus, Testcase, TeamMember, User, UserRole
+from app.services.access_deps import ProblemAccess
+from app.services.auth import CurrentUser, ProblemSetter, get_optional_user as get_optional_user_import
 from app.services.problem_data import data_dir, write_problem_data
 
 router = APIRouter(prefix="/problems", tags=["problems"])
@@ -31,7 +41,9 @@ class ProblemCreate(BaseModel):
     tags: list[str] = Field(default_factory=list)
     time_limit_ms: int = Field(default=2000, ge=100)
     memory_limit_mb: int = Field(default=256, ge=16)
-    is_public: bool = False
+    owner_type: OwnerType = OwnerType.USER
+    team_id: int | None = None  # owner_type=team 时必填
+    # 注意：创建时不再接收 is_public —— 新题一律先存草稿，公开必须走第三步测试
 
 
 class ProblemOut(BaseModel):
@@ -42,7 +54,7 @@ class ProblemOut(BaseModel):
     tags: list
     time_limit_ms: int = 2000
     memory_limit_mb: int = 256
-    is_public: bool
+    is_public: bool  # 出题视角需要区分草稿/已公开
 
     class Config:
         from_attributes = True
@@ -71,9 +83,23 @@ def _problem_out(p: Problem) -> ProblemOut:
 @router.get("", response_model=list[ProblemOut])
 async def list_problems(
     page: int = 1, size: int = 50,
+    mine: int = 0,  # 1 = 出题视角：我管理的（含未公开草稿）；0 = 刷题视角：公开题
     db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_optional_user_import),
 ):
-    stmt = select(Problem).where(Problem.is_public == True)  # noqa: E712
+    """mine=0 刷题视角：公开题目；mine=1 出题视角：我拥有的 + 我团队的（含草稿，ADMIN 全量）"""
+    if mine:
+        if user is None:
+            return []
+        if user.role == UserRole.ADMIN:
+            stmt = select(Problem)
+        else:
+            my_team_ids = select(TeamMember.team_id).where(TeamMember.user_id == user.id)
+            stmt = select(Problem).where(
+                ((Problem.owner_type == OwnerType.USER) & (Problem.owner_id == user.id))
+                | ((Problem.owner_type == OwnerType.TEAM) & Problem.owner_id.in_(my_team_ids)))
+    else:
+        stmt = select(Problem).where(Problem.is_public == True)  # noqa: E712
     total = await db.scalar(select(func.count()).select_from(stmt.subquery()))
     rows = await db.scalars(
         stmt.order_by(Problem.display_id).offset((page - 1) * size).limit(size)
@@ -84,21 +110,48 @@ async def list_problems(
     return items
 
 
-@router.get("/{problem_id}", response_model=ProblemDetailOut)
-async def get_problem(problem_id: int, db: AsyncSession = Depends(get_db)):
-    p = await db.get(Problem, problem_id)
-    if p is None or not p.is_public:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
+@router.get("/{problem_id}")
+async def get_problem(
+    p: Problem = Depends(ProblemAccess("view")),
+    db: AsyncSession = Depends(get_db),
+):
     out = ProblemDetailOut.model_validate(p)
     out.time_limit_ms = p.config.get("time_limit_ms", 2000)
     out.memory_limit_mb = p.config.get("memory_limit_mb", 256)
-    return out
+    # 样例随详情下发（题面可见部分）；隐藏用例绝不出现在此接口
+    tcs = await db.scalars(
+        select(Testcase).where(Testcase.problem_id == p.id, Testcase.is_sample == True)  # noqa: E712
+        .order_by(Testcase.idx))
+    data_root = data_dir(str(p.id), p.config.get("data_version", "v1"))
+    samples = []
+    for tc in tcs:
+        inp = out_text = ""
+        try:
+            inp = (data_root / tc.input_key).read_text(encoding="utf-8", errors="replace")[:4000]
+            out_text = (data_root / tc.output_key).read_text(encoding="utf-8", errors="replace")[:4000]
+        except OSError:
+            pass
+        samples.append({"idx": tc.idx, "input": inp, "output": out_text})
+    return {**out.model_dump(), "samples": samples}
 
 
 @router.post("", response_model=ProblemOut, status_code=201)
 async def create_problem(
-    req: ProblemCreate, db: AsyncSession = Depends(get_db), user: User = ProblemSetter
+    req: ProblemCreate, db: AsyncSession = Depends(get_db), user: User = ProblemSetter,
 ):
+    # 归属个人或团队（团队需有管理权）
+    if req.owner_type == OwnerType.TEAM:
+        if not req.team_id:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "缺少 team_id")
+        from app.services.access import require_team_manage
+        from app.models import Team
+        t = await db.get(Team, req.team_id)
+        if t is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "团队不存在")
+        await require_team_manage(db, req.team_id, user)
+        owner_id = req.team_id
+    else:
+        owner_id = user.id
     display_id = await db.scalar(select(func.max(Problem.display_id))) or 0
     p = Problem(
         display_id=display_id + 1,
@@ -111,8 +164,9 @@ async def create_problem(
             "memory_limit_mb": req.memory_limit_mb,
             "languages": ["python3.12", "cpp17", "c17", "java21"],
         },
-        owner_id=user.id,
-        is_public=req.is_public,
+        owner_type=req.owner_type,
+        owner_id=owner_id,
+        is_public=False,  # 创建一律先为草稿，公开必须通过第三步测试后发布
     )
     db.add(p)
     await db.commit()
@@ -123,18 +177,60 @@ async def create_problem(
     return out
 
 
+class ProblemUpdate(BaseModel):
+    """编辑题目：仅提供管理权校验后的可选字段
+    注意：is_public 不在此处，可见性只能走 PUT /publish（硬校验验证凭证）"""
+    title: str | None = Field(default=None, min_length=1, max_length=128)
+    description: str | None = None
+    difficulty: int | None = Field(default=None, ge=1, le=5)
+    tags: list[str] | None = None
+    time_limit_ms: int | None = Field(default=None, ge=100)
+    memory_limit_mb: int | None = Field(default=None, ge=16)
+
+
+@router.put("/{problem_id}", response_model=ProblemDetailOut)
+async def update_problem(
+    problem_id: int,
+    req: ProblemUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: User = CurrentUser,
+    p: Problem = Depends(ProblemAccess("manage")),
+):
+    """编辑题目（题面/限制/可见性）；权限 = 资源管理权（owner/团队队长副队/ADMIN）"""
+    if req.title is not None:
+        p.title = req.title
+    if req.description is not None:
+        p.description = req.description
+    if req.difficulty is not None:
+        p.difficulty = req.difficulty
+    if req.tags is not None:
+        p.tags = req.tags
+    if req.time_limit_ms is not None or req.memory_limit_mb is not None:
+        p.config = {
+            **p.config,
+            "time_limit_ms": req.time_limit_ms or p.config.get("time_limit_ms", 2000),
+            "memory_limit_mb": req.memory_limit_mb or p.config.get("memory_limit_mb", 256),
+        }
+    # 注意：is_public 不允许通过普通编辑修改，只能走 /publish（校验验证凭证）
+    await db.commit()
+    await db.refresh(p)
+    out = ProblemDetailOut.model_validate(p)
+    out.time_limit_ms = p.config.get("time_limit_ms", 2000)
+    out.memory_limit_mb = p.config.get("memory_limit_mb", 256)
+    return out
+
+
 @router.post("/{problem_id}/data")
 async def upload_problem_data(
     problem_id: int,
     file: UploadFile = File(...),
     data_version: str = Form("v1"),
     db: AsyncSession = Depends(get_db),
-    user: User = ProblemSetter,
+    user: User = CurrentUser,
+    p: Problem = Depends(ProblemAccess("manage")),
 ):
-    """上传题目数据 zip 包：manifest.json + cases/*.in + cases/*.out"""
-    p = await db.get(Problem, problem_id)
-    if p is None or (p.owner_id != user.id and user.role != UserRole.ADMIN):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在或无权限")
+    """上传题目数据 zip 包：manifest.json + cases/*.in + cases/*.out
+    权限：资源级管理权（owner/团队队长副队/ADMIN），不要求全局出题人角色"""
     content = await file.read()
     if len(content) > 64 * 1024 * 1024:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "数据包超过 64MB")
@@ -143,17 +239,12 @@ async def upload_problem_data(
         await write_problem_data(str(p.id), data_version, files)
     except (KeyError, AssertionError) as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"数据包不合法: {e}") from e
-    # 同步 testcases 表（判题时按 idx 取分值）
-    manifest = json.loads(files["manifest.json"])
-    for i, case in enumerate(manifest["cases"]):
-        db.add(Testcase(problem_id=p.id, idx=i, case_id=case["id"],
-                        input_key=f"cases/{case['id']}.in",
-                        output_key=f"cases/{case['id']}.out",
-                        score=case.get("score", 0)))
-    # 更新题目 config 里的数据版本，触发节点缓存失效
-    p.config = {**p.config, "data_version": data_version}
+    # 同步 testcases 表（判题时按 idx 取分值）；数据变了，验证凭证作废
+    case_count = await _sync_testcases_from_manifest(db, p, files)
+    p.config = {**p.config, "data_version": data_version,
+                "verified_at": None, "solution_code": None, "solution_language": None}
     await db.commit()
-    return {"ok": True, "files": len(files), "cases": len(manifest["cases"])}
+    return {"ok": True, "files": len(files), "cases": case_count}
 
 
 def _unzip_to_dict(content: bytes) -> dict[str, bytes]:
@@ -161,9 +252,244 @@ def _unzip_to_dict(content: bytes) -> dict[str, bytes]:
     import zipfile
 
     files: dict[str, bytes] = {}
-    with zipfile.ZipFile(io.BytesIO(content)) as zf:
-        for name in zf.namelist():
-            if name.endswith("/"):
-                continue
-            files[name] = zf.read(name)
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            for name in zf.namelist():
+                if name.endswith("/"):
+                    continue
+                files[name] = zf.read(name)
+    except zipfile.BadZipFile as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "不是合法的 zip 数据包") from e
     return files
+
+
+# ---------- 三步出题：用例管理 / 标程验证 / 发布 ----------
+
+async def _sync_testcases_from_manifest(db: AsyncSession, p: Problem, files: dict[str, bytes]) -> int:
+    """按 manifest 同步 testcases 表（数据包上传后调用），返回用例数
+    manifest 条目可带 "sample": true 标记样例；zip 整体替换时旧标记作废"""
+    old = (await db.scalars(select(Testcase).where(Testcase.problem_id == p.id))).all()
+    for r in old:
+        await db.delete(r)
+    # 先 flush 删除，避免 (problem_id, idx) 唯一约束在删除/插入同批执行时冲突
+    await db.flush()
+    manifest = json.loads(files["manifest.json"])
+    for i, case in enumerate(manifest["cases"]):
+        db.add(Testcase(problem_id=p.id, idx=i, case_id=case["id"],
+                        input_key=f"cases/{case['id']}.in",
+                        output_key=f"cases/{case['id']}.out",
+                        score=case.get("score", 0),
+                        is_sample=bool(case.get("sample", False))))
+    return len(manifest["cases"])
+
+
+@router.get("/{problem_id}/cases")
+async def list_cases(
+    p: Problem = Depends(ProblemAccess("manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    """用例列表（出题人视角）：样例与隐藏用例分开返回 + 标程/发布状态"""
+    tcs = await db.scalars(
+        select(Testcase).where(Testcase.problem_id == p.id).order_by(Testcase.idx))
+    samples, hidden = [], []
+    data_root = data_dir(str(p.id), p.config.get("data_version", "v1"))
+    for tc in tcs:
+        inp = out = ""
+        try:
+            inp = (data_root / tc.input_key).read_text(encoding="utf-8", errors="replace")[:2000]
+            out = (data_root / tc.output_key).read_text(encoding="utf-8", errors="replace")[:2000]
+        except OSError:
+            pass
+        item = {
+            "idx": tc.idx, "case_id": tc.case_id, "score": tc.score,
+            "is_sample": tc.is_sample,
+            "input_preview": inp, "output_preview": out,
+        }
+        (samples if tc.is_sample else hidden).append(item)
+    return {
+        "samples": samples,
+        "cases": hidden,
+        "has_data": bool(samples or hidden),
+        "data_version": p.config.get("data_version", "v1"),
+        "solution_code": p.config.get("solution_code"),
+        "solution_language": p.config.get("solution_language"),
+        "verified_at": p.config.get("verified_at"),
+        "is_public": p.is_public,
+    }
+
+
+@router.post("/{problem_id}/cases/sample")
+async def add_sample_case(
+    problem_id: int,
+    body: dict,
+    p: Problem = Depends(ProblemAccess("manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    """追加一个用例：body {"input": "...", "output": "...", "score": 10, "is_sample": true}
+    is_sample=true → 样例（题面可见）；默认 False → 隐藏用例。
+    直接落盘到当前数据版本目录并同步 testcases 表"""
+    inp = body.get("input", "")
+    out = body.get("output", "")
+    is_sample = bool(body.get("is_sample", False))
+    if not inp and not out:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "输入/输出不能同时为空")
+    version = p.config.get("data_version", "v1")
+    root = data_dir(str(p.id), version)
+    tcs = await db.scalars(
+        select(Testcase).where(Testcase.problem_id == p.id).order_by(Testcase.idx))
+    existing = list(tcs)
+    idx = len(existing)
+    case_id = f"tc{idx}"
+    (root / "cases").mkdir(parents=True, exist_ok=True)
+    (root / "cases" / f"{case_id}.in").write_text(inp, encoding="utf-8")
+    (root / "cases" / f"{case_id}.out").write_text(out, encoding="utf-8")
+    # manifest 同步追加
+    mf_path = root / "manifest.json"
+    manifest = {"cases": [{"id": tc.case_id, "score": tc.score, "sample": tc.is_sample}
+                          for tc in existing]}
+    manifest["cases"].append({"id": case_id, "score": body.get("score", 0), "sample": is_sample})
+    mf_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    db.add(Testcase(problem_id=p.id, idx=idx, case_id=case_id,
+                    input_key=f"cases/{case_id}.in", output_key=f"cases/{case_id}.out",
+                    score=body.get("score", 0), is_sample=is_sample))
+    await db.commit()
+    return {"ok": True, "case_id": case_id, "idx": idx, "is_sample": is_sample}
+
+
+@router.delete("/{problem_id}/cases/{idx}")
+async def delete_case(
+    idx: int,
+    p: Problem = Depends(ProblemAccess("manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    """删除指定序号用例并重排（数据文件保留在目录中，manifest/testcases 同步）"""
+    tcs = await db.scalars(
+        select(Testcase).where(Testcase.problem_id == p.id).order_by(Testcase.idx))
+    existing = list(tcs)
+    if idx < 0 or idx >= len(existing):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "用例不存在")
+    target = existing.pop(idx)
+    await db.delete(target)
+    await db.flush()  # 先落删除，避免重排 UPDATE 撞 (problem_id, idx) 唯一约束
+    # 重排 idx 并同步 manifest
+    version = p.config.get("data_version", "v1")
+    root = data_dir(str(p.id), version)
+    manifest = {"cases": []}
+    for i, tc in enumerate(existing):
+        tc.idx = i
+        manifest["cases"].append({"id": tc.case_id, "score": tc.score})
+    mf_path = root / "manifest.json"
+    if mf_path.parent.exists():
+        mf_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    await db.commit()
+    return {"ok": True, "count": len(existing)}
+
+
+class SolutionReq(BaseModel):
+    code: str = Field(min_length=1, max_length=100_000)
+    language: str = Field(pattern="^(python3\\.12|cpp17|c17|java21)$")
+
+
+RUN_STATUS_LABEL = {
+    "finished": "运行完成", "runtime_error": "运行错误", "time_limit_exceeded": "超时",
+    "memory_limit_exceeded": "超内存", "output_limit_exceeded": "输出超限",
+    "compile_error": "编译错误", "system_error": "系统错误",
+}
+
+
+def _same_output(expected: str, actual: str) -> bool:
+    """与判题节点一致：忽略行尾空格与末尾换行"""
+    def norm(s: str) -> list[str]:
+        return [ln.rstrip(" \t") for ln in s.splitlines() if ln.strip()]
+    return norm(expected) == norm(actual)
+
+
+@router.post("/{problem_id}/verify")
+async def verify_solution(
+    problem_id: int,
+    req: SolutionReq,
+    p: Problem = Depends(ProblemAccess("manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    """标程验证：用标程跑全部用例逐个比对（第三步「测试」）
+    全部通过才允许 is_public=true 发布"""
+    tcs = await db.scalars(
+        select(Testcase).where(Testcase.problem_id == p.id).order_by(Testcase.idx))
+    tcs = list(tcs)  # type: ignore[assignment]
+    if not tcs:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "请先上传测试数据（第二步）")
+
+    data_version = p.config.get("data_version", "v1")
+    cases = [judge_pb2.TestCase(test_case_id=tc.case_id, score=tc.score) for tc in tcs]
+    job = judge_pb2.SubmitJob(
+        submission_id=f"verify-{uuid.uuid4().hex}",
+        language=req.language,
+        code=req.code.encode(),
+        limits=judge_pb2.ResourceLimits(
+            time_limit_ms=p.config.get("time_limit_ms", 2000),
+            memory_limit_mb=p.config.get("memory_limit_mb", 256)),
+        problem_id=str(p.id),
+        data_version=data_version,
+        cases=cases,
+        stop_on_failure=False,  # 验证跑完全部用例，给出完整报告
+    )
+    try:
+        result = await get_gateway().submit(job, timeout=180)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"判题节点不可用: {e}") from e
+
+    detail = []
+    all_pass = True
+    data_root = data_dir(str(p.id), data_version)
+    for i, c in enumerate(result.cases):
+        passed = c.status == "accepted"
+        all_pass = all_pass and passed
+        exp_out = ""
+        if i < len(tcs):
+            try:
+                exp_out = (data_root / tcs[i].output_key).read_text(
+                    encoding="utf-8", errors="replace")[:2000]
+            except OSError:
+                pass
+        detail.append({
+            "idx": i, "case_id": tcs[i].case_id if i < len(tcs) else c.test_case_id,
+            "status": c.status, "passed": passed,
+            "time_used_ms": c.time_used_ms, "memory_used_kb": c.memory_used_kb,
+            "expected_preview": exp_out,
+        })
+    # 全部通过：保存标程与验证时间（发布凭证）
+    if all_pass and result.status == "accepted":
+        p.config = {**p.config, "solution_code": req.code,
+                    "solution_language": req.language,
+                    "verified_at": datetime.now(timezone.utc).isoformat()}
+        await db.commit()
+    return {
+        "ok": all_pass, "total": len(detail),
+        "passed": sum(1 for d in detail if d["passed"]),
+        "cases": detail,
+        "error_message": result.error_message,
+        "verified": all_pass,
+    }
+
+
+@router.put("/{problem_id}/publish")
+async def publish_problem(
+    problem_id: int,
+    body: dict,
+    p: Problem = Depends(ProblemAccess("manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    """发布/存草稿/撤回。
+    is_public=true：硬校验（有测试数据 + 已通过标程验证）后才公开
+    is_public=false：保存为草稿（不公开，无需验证凭证）"""
+    want_public = bool(body.get("is_public", True))
+    if want_public:
+        tc_count = await db.scalar(
+            select(func.count()).select_from(Testcase).where(Testcase.problem_id == p.id))
+        if not tc_count:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "发布失败：请先上传测试数据")
+        if not p.config.get("verified_at"):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "发布失败：请先通过标程验证（第三步测试）")
+    p.is_public = want_public
+    await db.commit()
+    return {"ok": True, "is_public": p.is_public}
