@@ -250,7 +250,125 @@ async def test_frozen_board_hides_new_submissions(client, normal_user, db_sessio
     assert rows[0]["solved"] == 1
 
 
+async def test_contest_submission_detail_permission(client, normal_user, db_sessionmaker, gateway):
+    """提交详情权限：本人/比赛管理者可见；陌生人 404 防枚举；未登录 401"""
+    p = await _setup_problem(client, normal_user)
+    r = await client.post("/contests", json={
+        "title": "t", "problem_ids": [p["id"]], **_time_window()},
+        headers=await auth_header(normal_user))
+    cid = r.json()["id"]
+    await client.post(f"/contests/{cid}/register", headers=await auth_header(normal_user))
+    body = await _submit_in_contest(client, cid, normal_user, gateway)
+    sid = body["id"]
+
+    # 本人（兼比赛创建者）：源码 + 测试点明细均可见
+    r = await client.get(f"/contests/{cid}/submissions/{sid}",
+                         headers=await auth_header(normal_user))
+    assert r.status_code == 200
+    d = r.json()
+    assert d["code"] == AC_CODE
+    assert len(d["detail"]) == 1  # 假节点回传的单测试点
+
+    # 陌生人：404（与不存在同响应，防枚举）
+    async with db_sessionmaker() as db:
+        stranger = await make_user(db, "sub_detail_stranger")
+    r = await client.get(f"/contests/{cid}/submissions/{sid}",
+                         headers=await auth_header(stranger))
+    assert r.status_code == 404
+
+    # 未登录：401
+    r = await client.get(f"/contests/{cid}/submissions/{sid}")
+    assert r.status_code == 401
+
+
+async def test_contest_submission_detail_anti_lookup(client, normal_user, db_sessionmaker, gateway):
+    """防打表：进行中本人只见源码无明细；管理者随时可见；结束后本人可见"""
+    p = await _setup_problem(client, normal_user)
+    r = await client.post("/contests", json={
+        "title": "t", "problem_ids": [p["id"]], **_time_window()},
+        headers=await auth_header(normal_user))
+    cid = r.json()["id"]
+
+    async with db_sessionmaker() as db:
+        player = await make_user(db, "sub_detail_player")
+    await client.post(f"/contests/{cid}/register", headers=await auth_header(player))
+    body = await _submit_in_contest(client, cid, player, gateway,
+                                    status="wrong_answer", score=0)
+    sid = body["id"]
+
+    # 进行中：本人只有源码，测试点明细隐藏
+    r = await client.get(f"/contests/{cid}/submissions/{sid}",
+                         headers=await auth_header(player))
+    assert r.status_code == 200
+    d = r.json()
+    assert d["code"] == AC_CODE
+    assert d["detail"] == []
+
+    # 管理者（比赛创建者）：随时可见明细
+    r = await client.get(f"/contests/{cid}/submissions/{sid}",
+                         headers=await auth_header(normal_user))
+    assert len(r.json()["detail"]) == 1
+
+    # 结束后（创建者把结束时间改到过去）：本人可见明细
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    r = await client.patch(f"/contests/{cid}", json={"end_at": past},
+                           headers=await auth_header(normal_user))
+    assert r.status_code == 200, r.text
+    r = await client.get(f"/contests/{cid}/submissions/{sid}",
+                         headers=await auth_header(player))
+    assert len(r.json()["detail"]) == 1
+
+
+async def test_contest_submission_detail_ce_error_visible(client, normal_user, db_sessionmaker, gateway):
+    """CE：编译错误信息不含测试数据，进行中对本人（非管理者）也可见（测试点明细仍隐藏）"""
+    p = await _setup_problem(client, normal_user)
+    r = await client.post("/contests", json={
+        "title": "t", "problem_ids": [p["id"]], **_time_window()},
+        headers=await auth_header(normal_user))
+    cid = r.json()["id"]
+
+    async with db_sessionmaker() as db:
+        player = await make_user(db, "sub_detail_ce")
+    await client.post(f"/contests/{cid}/register", headers=await auth_header(player))
+    body = await _submit_in_contest(client, cid, player, gateway,
+                                    status="compile_error", score=0,
+                                    error_message="SyntaxError: invalid syntax")
+    sid = body["id"]
+
+    r = await client.get(f"/contests/{cid}/submissions/{sid}",
+                         headers=await auth_header(player))
+    assert r.status_code == 200
+    d = r.json()
+    assert "SyntaxError" in d["error_message"]
+    assert d["detail"] == []  # 测试点明细进行中仍隐藏
+    assert d["code"] == AC_CODE
+
+
 # ---------------- 工具 ----------------
 
 def await_or_raise(task):
     return asyncio.wait_for(task, timeout=10)
+
+
+async def _submit_in_contest(client, cid: int, user, gateway, *,
+                             status: str = "accepted", score: int = 100,
+                             error_message: str = "") -> dict:
+    """在比赛内提交 A 题并用假节点回传指定结果，返回提交响应 JSON"""
+    node = add_fake_node(gateway)  # 每次新节点，避免与其他用例的队列混用
+    node_id = node.node_id
+    req_task = asyncio.create_task(client.post(
+        f"/contests/{cid}/problems/A/submit",
+        json={"language": "python3.12", "code": AC_CODE},
+        headers=await auth_header(user)))
+    jobs = await drain_node_queue(node)
+    if not jobs:
+        # 调度轮询可能选中早前的假节点（容量未释放），清空其队列重试一次
+        older = [n for nid, n in gateway.nodes.items() if nid != node_id]
+        for n in older:
+            jobs += await drain_node_queue(n)
+    assert jobs, "任务未被任何假节点接收"
+    await resolve_submit(gateway, jobs[0], status=status, score=score,
+                         error_message=error_message)
+    r = await await_or_raise(req_task)
+    assert r.status_code == 201, r.text
+    return r.json()
