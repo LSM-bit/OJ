@@ -172,59 +172,50 @@
           </div>
         </div>
 
-        <!-- 右：标程编辑器（与做题页编辑器一致） -->
+        <!-- 右：标程编辑器（引用统一编辑器工作台，验题页自定义头/尾） -->
         <div class="pane pane-right">
-          <div class="pane-head editor-head">
-            <el-select v-model="solution.language" size="small" style="width:160px">
-              <el-option label="Python 3.12" value="python3.12" />
-              <el-option label="C++17" value="cpp17" />
-              <el-option label="C17" value="c17" />
-              <el-option label="Java 21" value="java21" />
-            </el-select>
-            <el-tag v-if="casesInfo.verified_at" type="success" size="small" effect="light">
-              已通过验证 {{ casesInfo.verified_at.slice(0, 16).replace('T', ' ') }}
-            </el-tag>
-            <div class="head-spacer" />
-            <el-button type="primary" size="small" :loading="verifying"
-                       :disabled="!casesInfo.has_data || !solution.code.trim()" @click="verify">
-              运行测试（{{ (casesInfo.samples?.length ?? 0) + (casesInfo.cases?.length ?? 0) }} 个用例）
-            </el-button>
-          </div>
-          <div class="editor-wrap">
-            <!-- 与做题页同款 Monaco 编辑器 -->
-            <CodeEditor v-model="solution.code" :language="solution.language" class="solution-code" />
-          </div>
-
-          <!-- 自测面板（公共组件）：标程随手跑自定义输入，不占用正式验证 -->
-          <SelfTestPanel :problem-id="pid || undefined" :language="solution.language"
-                         :code="solution.code" />
-
-          <!-- 验证结果 -->
-          <div v-if="verifyResult" class="verify-result">
-            <el-alert :type="verifyResult.ok ? 'success' : 'error'" :closable="false"
-                      :title="verifyResult.ok
-                        ? `全部通过（${verifyResult.passed}/${verifyResult.total}）`
-                        : `未全部通过（${verifyResult.passed}/${verifyResult.total}）`"
-                      style="margin-bottom:10px" />
-            <el-table :data="verifyResult.cases" size="small" border class="verify-table">
-              <el-table-column prop="idx" label="#" width="48" />
-              <el-table-column prop="case_id" label="用例" width="88" />
-              <el-table-column label="结果" width="96">
-                <template #default="{ row }">
-                  <el-tag size="small" :type="row.passed ? 'success' : 'danger'">
-                    {{ row.passed ? '通过' : row.status }}
-                  </el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column prop="time_used_ms" label="耗时(ms)" width="88" />
-              <el-table-column prop="memory_used_kb" label="内存(KB)" width="88" />
-              <el-table-column label="期望输出" min-width="120">
-                <template #default="{ row }">
-                  <pre class="io-preview">{{ row.expected_preview || '（空）' }}</pre>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
+          <CodeWorkbench v-model:code="solution.code" v-model:language="solution.language"
+                         :problem-id="pid || undefined" :show-submit="false" :show-reset="false">
+            <template #head-after-lang>
+              <el-tag v-if="casesInfo.verified_at" type="success" size="small" effect="light">
+                已通过验证 {{ casesInfo.verified_at.slice(0, 16).replace('T', ' ') }}
+              </el-tag>
+            </template>
+            <template #head-right>
+              <el-button type="primary" size="small" :loading="verifying"
+                         :disabled="!casesInfo.has_data || !solution.code.trim()" @click="verify">
+                运行测试（{{ (casesInfo.samples?.length ?? 0) + (casesInfo.cases?.length ?? 0) }} 个用例）
+              </el-button>
+            </template>
+            <template #footer>
+              <!-- 验证结果 -->
+              <div v-if="verifyResult" class="verify-result">
+                <el-alert :type="verifyResult.ok ? 'success' : 'error'" :closable="false"
+                          :title="verifyResult.ok
+                            ? `全部通过（${verifyResult.passed}/${verifyResult.total}）`
+                            : `未全部通过（${verifyResult.passed}/${verifyResult.total}）`"
+                          style="margin-bottom:10px" />
+                <el-table :data="verifyResult.cases" size="small" border class="verify-table">
+                  <el-table-column prop="idx" label="#" width="48" />
+                  <el-table-column prop="case_id" label="用例" width="88" />
+                  <el-table-column label="结果" width="96">
+                    <template #default="{ row }">
+                      <el-tag size="small" :type="row.passed ? 'success' : 'danger'">
+                        {{ row.passed ? '通过' : row.status }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="time_used_ms" label="耗时(ms)" width="88" />
+                  <el-table-column prop="memory_used_kb" label="内存(KB)" width="88" />
+                  <el-table-column label="期望输出" min-width="120">
+                    <template #default="{ row }">
+                      <pre class="io-preview">{{ row.expected_preview || '（空）' }}</pre>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
+            </template>
+          </CodeWorkbench>
         </div>
       </div>
     </div>
@@ -290,8 +281,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import md from '../utils/markdown'
 import { api } from '../api/client'
-import CodeEditor from '../components/CodeEditor.vue'
-import SelfTestPanel from '../components/SelfTestPanel.vue'
+import CodeWorkbench from '../components/CodeWorkbench.vue'
 
 const DIFF = ['', '入门', '简单', '中等', '较难', '困难']
 const diffLabel = (d: number) => DIFF[d] ?? '未知'
@@ -617,24 +607,6 @@ async function publish(isPublic: boolean) {
   padding: 8px 10px;
   max-height: 200px;
   overflow-y: auto;
-}
-.editor-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.head-spacer { flex: 1; }
-.editor-wrap {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 8px 12px;
-}
-.solution-code {
-  flex: 1;
-  min-height: 0;
-  height: auto;
 }
 /* 验证结果：固定高度面板，内部滚动 */
 .verify-result {

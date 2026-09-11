@@ -189,3 +189,96 @@ async def test_update_problem_denied_for_others(client, normal_user, db_sessionm
     r = await client.put(f"/problems/{p['id']}", json={"title": "hacked"},
                          headers=await auth_header(other))
     assert r.status_code == 404
+
+
+# ---------------- 标签筛选与标签云 ----------------
+
+async def _make_public_problem(client, user, *, title: str, tags: list[str]) -> dict:
+    """造一道公开题：先创建（带 tags），走数据上传 + 标程验证 + 发布。
+    复用 test_publish_flow_makes_problem_public 的流程，仅注入 tags"""
+    r = await client.post("/problems", json=problem_payload(title=title, tags=tags),
+                          headers=await auth_header(user))
+    assert r.status_code == 201, r.text
+    p = r.json()
+    r = await client.post(f"/problems/{p['id']}/data",
+                          files={"file": ("data.zip", make_zip(), "application/zip")},
+                          headers=await auth_header(user))
+    assert r.status_code == 200, r.text
+
+    from app.judge_gateway.gen.judge.v1 import judge_pb2
+
+    from app.judge_gateway import server as gw_server
+    from tests.conftest import add_fake_node, drain_node_queue, resolve_submit
+    gw = gw_server._gateway
+    node = add_fake_node(gw) if not gw.nodes else list(gw.nodes.values())[0]
+
+    import asyncio
+
+    async def _verify():
+        return await client.post(f"/problems/{p['id']}/verify",
+                                 json={"language": "python3.12", "code": "print(sum(map(int, input().split())))"},
+                                 headers=await auth_header(user))
+
+    task = asyncio.create_task(_verify())
+    jobs = await drain_node_queue(node)
+    for job in jobs:
+        await resolve_submit(gw, job, status="accepted", score=100,
+                             cases=[{"test_case_id": c.test_case_id, "status": "accepted"} for c in job.cases])
+    r = await asyncio.wait_for(task, timeout=10)
+    assert r.status_code == 200 and r.json()["verified"] is True, r.text
+
+    r = await client.put(f"/problems/{p['id']}/publish", json={"is_public": True},
+                         headers=await auth_header(user))
+    assert r.status_code == 200, r.text
+    return p
+
+
+async def test_problem_tag_filter(client, normal_user, gateway):
+    """?tag= 单标签过滤；多标签逗号分隔取交集；草稿不参与"""
+    from tests.conftest import AC_AB_CODE, setup_public_problem
+
+    # setup_public_problem 创建的题不带 tags（默认空），先造三道不同标签的公开题
+    sim = await _make_public_problem(client, normal_user, title="模拟题", tags=["模拟", "暴力"])
+    math = await _make_public_problem(client, normal_user, title="数学题", tags=["数学"])
+    both = await _make_public_problem(client, normal_user, title="模拟数学题", tags=["模拟", "数学"])
+    # 一道私有草稿：不应出现在任何筛选结果里
+    await _create_problem(client, normal_user, title="草稿题", tags=["模拟"])
+
+    # 单标签
+    r = await client.get("/problems", params={"tag": "模拟"})
+    titles = {x["title"] for x in r.json()}
+    assert titles == {"模拟题", "模拟数学题"}
+    assert all("模拟" in x["tags"] for x in r.json())
+
+    # 多标签取交集：模拟 ∧ 数学 只有 both
+    r = await client.get("/problems", params={"tag": "模拟,数学"})
+    titles = {x["title"] for x in r.json()}
+    assert titles == {"模拟数学题"}
+    # 两题结果集 id 与创建顺序一致
+    assert [x["id"] for x in r.json()] == [both["id"]]
+
+    # 不存在的标签：空列表
+    r = await client.get("/problems", params={"tag": "不存在"})
+    assert r.json() == []
+
+    # 不带 tag：公开题全集（3 道公开，草稿不出现）
+    r = await client.get("/problems")
+    titles = {x["title"] for x in r.json()}
+    assert titles == {"模拟题", "数学题", "模拟数学题"}
+
+
+async def test_tag_cloud_counts_only_public(client, normal_user, gateway):
+    """GET /problems/tags 只统计公开题；计数降序；同题内标签各计一次"""
+    from tests.conftest import setup_public_problem
+    await _make_public_problem(client, normal_user, title="t1", tags=["模拟", "模拟", "数学"])
+    # 私有草稿带标签：不计入标签云
+    await _create_problem(client, normal_user, title="t2-draft", tags=["模拟", "独家"])
+
+    r = await client.get("/problems/tags")
+    assert r.status_code == 200, r.text
+    items = r.json()["items"]
+    counter = {x["tag"]: x["count"] for x in items}
+    # 重复标签去重后计 1；草稿标签不出现
+    assert counter == {"模拟": 1, "数学": 1}
+    # 计数相同按 tag 字典序
+    assert [x["tag"] for x in items] == ["数学", "模拟"]

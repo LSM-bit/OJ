@@ -1,7 +1,7 @@
 <!--
   ContestDetailView.vue - 比赛详情页（参考牛客 OJ）
-  上方：比赛信息头（状态/赛制/时间/倒计时/报名按钮）
-  Tab：比赛题目 | 排行榜（ACM 罚时/封榜气泡）| 公告
+  上方：比赛信息头（状态/赛制/时间/倒计时/报名按钮，管理者显示「编辑」入口）
+  Tab：比赛题目（管理者可批量重测）| 排行榜（ACM 罚时/封榜气泡）| 公告（管理者可发布）
   题目 tab 内点击题目行内展开提交框，比赛内提交
 -->
 <template>
@@ -12,6 +12,9 @@
         <div class="ch-top">
           <el-tag :type="phaseTag(contest.phase)" effect="dark" size="small">{{ phaseLabel(contest.phase) }}</el-tag>
           <h2 class="ch-title">{{ contest.title }}</h2>
+          <el-button v-if="contest.is_manageable" size="small" @click="openEdit">
+            <el-icon style="margin-right:4px"><Edit /></el-icon>编辑
+          </el-button>
           <el-button
             v-if="userStore.isLoggedIn"
             type="primary" size="small"
@@ -65,10 +68,13 @@
             <el-table-column label="时间/内存限制" width="160">
               <template #default="{ row }">{{ row.time_limit_ms }}ms / {{ row.memory_limit_mb }}MB</template>
             </el-table-column>
-            <el-table-column label="操作" width="100" align="center">
+            <el-table-column label="操作" :width="contest.is_manageable ? 160 : 100" align="center">
               <template #default="{ row }">
                 <el-button v-if="userStore.isLoggedIn" type="primary" plain size="small"
                            @click="toggleSubmit(row)">提交</el-button>
+                <el-button v-if="contest.is_manageable" type="warning" plain size="small"
+                           :loading="rejudging === row.alias"
+                           @click="rejudgeProblem(row)">重测</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -124,16 +130,109 @@
             </el-table>
           </div>
         </el-tab-pane>
+
+        <el-tab-pane label="公告" name="announcements">
+          <!-- 管理者发布框 -->
+          <div v-if="contest.is_manageable" class="ann-editor">
+            <h4>发布公告</h4>
+            <el-input v-model="annForm.title" size="small" maxlength="128" show-word-limit
+                      placeholder="公告标题（如：A 题数据已更新，请注意重交）" style="margin-bottom:8px" />
+            <el-input v-model="annForm.content" type="textarea" :rows="4" maxlength="10000"
+                      placeholder="公告内容（支持说明澄清、勘误、数据更新等）" />
+            <div style="margin-top:8px">
+              <el-button type="primary" size="small" :loading="annPosting"
+                         :disabled="!annForm.title.trim()" @click="postAnnouncement">发布公告</el-button>
+            </div>
+          </div>
+          <el-empty v-if="announcements.length === 0" description="暂无公告" :image-size="60" />
+          <div v-else class="ann-list">
+            <div v-for="a in announcements" :key="a.id" class="ann-item">
+              <div class="ann-head">
+                <span class="ann-title">{{ a.title }}</span>
+                <span class="ann-meta">{{ a.author_name }} · {{ fmtFull(a.created_at) }}</span>
+              </div>
+              <div class="ann-content">{{ a.content }}</div>
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane v-if="userStore.isLoggedIn" label="提交记录" name="submissions" lazy>
+          <div class="subs-toolbar">
+            <el-select v-model="subsFilter.alias" placeholder="题目" clearable size="small"
+                       style="width:120px" @change="reloadSubs">
+              <el-option v-for="p in contest.problems" :key="p.alias"
+                         :label="`${p.alias}. ${p.title}`" :value="p.alias" />
+            </el-select>
+            <el-input v-if="subs.can_view_all" v-model="subsFilter.username"
+                      placeholder="用户名" clearable size="small" style="width:140px"
+                      @change="reloadSubs" />
+            <el-button size="small" @click="loadSubs">刷新</el-button>
+            <span v-if="!subs.can_view_all" class="form-tip">仅显示你自己的提交</span>
+            <span v-else class="form-tip">管理者视图：可查看所有人的提交</span>
+          </div>
+          <el-table :data="subs.items" stripe size="small" v-loading="subsLoading">
+            <el-table-column label="ID" width="120">
+              <template #default="{ row }">
+                <span class="mono-id">{{ shortId(row.id) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="username" label="用户" width="110" />
+            <el-table-column prop="problem_alias" label="题号" width="70" align="center" />
+            <el-table-column prop="language" label="语言" width="110" />
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag size="small" :type="statusTag(row.status)">{{ row.status_label }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="score" label="分数" width="70" align="center" />
+            <el-table-column prop="time_ms" label="耗时(ms)" width="90" align="center" />
+            <el-table-column prop="memory_kb" label="内存(KB)" width="90" align="center" />
+            <el-table-column label="提交时间" min-width="140">
+              <template #default="{ row }">{{ fmtFull(row.submitted_at) }}</template>
+            </el-table-column>
+          </el-table>
+          <el-pagination v-if="subs.total > subsPageSize" class="pager"
+                         layout="total, prev, pager, next" :total="subs.total"
+                         :page-size="subsPageSize" :current-page="subsPage"
+                         @current-change="(p: number) => { subsPage = p; loadSubs() }" />
+        </el-tab-pane>
       </el-tabs>
+
+      <!-- 编辑比赛时间（仅结束前） -->
+      <el-dialog v-model="showEdit" title="编辑比赛时间" width="460">
+        <el-form label-width="90px" size="small">
+          <el-form-item label="开始时间">
+            <el-date-picker v-model="editForm.start_at" type="datetime"
+                            value-format="YYYY-MM-DDTHH:mm:ss"
+                            placeholder="选择开始时间" style="width:100%" />
+          </el-form-item>
+          <el-form-item label="结束时间">
+            <el-date-picker v-model="editForm.end_at" type="datetime"
+                            value-format="YYYY-MM-DDTHH:mm:ss"
+                            placeholder="选择结束时间" style="width:100%" />
+          </el-form-item>
+          <el-form-item label="封榜(分钟)">
+            <el-input-number v-model="editForm.board_freeze_minutes" :min="0" :max="10080"
+                             style="width:100%" />
+            <span class="form-tip">0 表示不封榜；封榜 = 结束前 N 分钟冻结榜单</span>
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button size="small" @click="showEdit = false">取消</el-button>
+          <el-button type="primary" size="small" :loading="saving" @click="saveEdit">保存</el-button>
+        </template>
+      </el-dialog>
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Edit } from '@element-plus/icons-vue'
 import { api } from '../api/client'
+import { shortId } from '../utils/format'
 import { useUserStore } from '../stores/user'
 
 const route = useRoute()
@@ -145,6 +244,52 @@ const standings = ref<any>(null)
 const loading = ref(true)
 const tab = ref('problems')
 const registered = ref(false)
+
+// 公告
+const announcements = ref<any[]>([])
+const annForm = reactive({ title: '', content: '' })
+const annPosting = ref(false)
+
+// 时间编辑（管理者）
+const showEdit = ref(false)
+const saving = ref(false)
+const editForm = reactive({ start_at: '', end_at: '', board_freeze_minutes: 0 })
+
+// 批量重测
+const rejudging = ref('')
+
+// 提交记录（登录用户可见；管理者可看所有人并按用户名筛选）
+const subs = ref({ total: 0, items: [], can_view_all: false })
+const subsFilter = reactive({ alias: '', username: '' })
+const subsPage = ref(1)
+const subsPageSize = 20
+const subsLoading = ref(false)
+
+function statusTag(s: string) {
+  return (({ ac: 'success', wa: 'danger', tle: 'warning', mle: 'warning',
+             re: 'danger', ce: 'info', se: 'danger',
+             waiting: 'info', judging: 'info' } as Record<string, any>)[s]) ?? 'info'
+}
+
+async function loadSubs() {
+  subsLoading.value = true
+  try {
+    const params: Record<string, any> = { page: subsPage.value, page_size: subsPageSize }
+    if (subsFilter.alias) params.problem_alias = subsFilter.alias
+    if (subs.can_view_all && subsFilter.username) params.username = subsFilter.username
+    subs.value = await api.get(`/contests/${route.params.id}/submissions`, { params }) as any
+  } finally {
+    subsLoading.value = false
+  }
+}
+
+async function reloadSubs() {
+  subsPage.value = 1
+  await loadSubs()
+}
+
+// 切到「提交记录」tab 时加载数据（lazy tab 首次激活才渲染，需主动触发）
+watch(tab, (v) => { if (v === 'submissions') reloadSubs() })
 
 const submitTarget = ref<any>(null)
 const language = ref('python3.12')
@@ -210,6 +355,92 @@ function toggleSubmit(row: any) {
   code.value = ''
 }
 
+// ---------- 管理功能 ----------
+
+function openEdit() {
+  // 日期选择器需要本地时间格式；把 ISO 时间转成 YYYY-MM-DDTHH:mm:ss（本地）
+  const toLocal = (iso: string) => {
+    const d = new Date(iso)
+    const p = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  }
+  editForm.start_at = toLocal(contest.value.start_at)
+  editForm.end_at = toLocal(contest.value.end_at)
+  editForm.board_freeze_minutes = contest.value.board_freeze_minutes ?? 0
+  showEdit.value = true
+}
+
+async function saveEdit() {
+  if (!editForm.start_at || !editForm.end_at) {
+    ElMessage.warning('请选择开始和结束时间')
+    return
+  }
+  if (new Date(editForm.end_at) <= new Date(editForm.start_at)) {
+    ElMessage.warning('结束时间必须晚于开始时间')
+    return
+  }
+  saving.value = true
+  try {
+    contest.value = await api.patch(`/contests/${contest.value.id}`, {
+      start_at: new Date(editForm.start_at).toISOString(),
+      end_at: new Date(editForm.end_at).toISOString(),
+      board_freeze_minutes: editForm.board_freeze_minutes,
+    }) as any
+    showEdit.value = false
+    ElMessage.success('比赛时间已更新')
+    await loadStandings()  // 封榜窗口可能变化，刷新榜单
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail ?? '保存失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+async function rejudgeProblem(row: any) {
+  try {
+    await ElMessageBox.confirm(
+      `确认重测 ${row.alias} 题的全部提交？该题所有提交将重新判题并覆盖结果（排行榜随之更新）。`,
+      '批量重测', { confirmButtonText: '重测', cancelButtonText: '取消', type: 'warning' })
+  } catch {
+    return
+  }
+  rejudging.value = row.alias
+  try {
+    const r = await api.post(
+      `/contests/${contest.value.id}/problems/${row.alias}/rejudge`) as any
+    ElMessage.success(
+      `重测完成：成功 ${r.rejudged} 条` +
+      (r.skipped ? `，跳过 ${r.skipped} 条（无源码）` : '') +
+      (r.failed ? `，失败 ${r.failed} 条` : ''))
+    await loadStandings()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail ?? '重测失败')
+  } finally {
+    rejudging.value = ''
+  }
+}
+
+async function loadAnnouncements() {
+  announcements.value = await api.get(`/contests/${route.params.id}/announcements`) as any
+}
+
+async function postAnnouncement() {
+  if (!annForm.title.trim()) return
+  annPosting.value = true
+  try {
+    await api.post(`/contests/${contest.value.id}/announcements`, {
+      title: annForm.title.trim(), content: annForm.content }) as any
+    annForm.title = ''
+    annForm.content = ''
+    ElMessage.success('公告已发布')
+    await loadAnnouncements()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail ?? '发布失败')
+  } finally {
+    annPosting.value = false
+  }
+}
+
 async function register() {
   try {
     await api.post(`/contests/${contest.value.id}/register`)
@@ -254,7 +485,7 @@ onMounted(async () => {
       visible: cp.visible,
       alias: cp.alias,
     }))
-    await loadStandings()
+    await Promise.all([loadStandings(), loadAnnouncements()])
     timer = window.setInterval(() => { now.value = Date.now() }, 1000)
   } catch {
     ElMessage.error('比赛不存在')
@@ -302,6 +533,42 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
 .sub-result.ce { color: var(--el-color-warning); }
 
 .standings-wrap { overflow-x: auto; }
+
+/* 公告 */
+.ann-editor {
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border: 1px solid var(--el-color-primary-light-7);
+  border-radius: 8px;
+  background: var(--el-color-primary-light-9);
+}
+.ann-editor h4 { margin: 0 0 8px; }
+.ann-list { display: flex; flex-direction: column; gap: 12px; }
+.ann-item {
+  padding: 12px 16px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  background: #fff;
+}
+.ann-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.ann-title { font-weight: 600; }
+.ann-meta { color: var(--el-text-color-secondary); font-size: 12px; white-space: nowrap; }
+.ann-content {
+  margin-top: 6px;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--el-text-color-regular);
+}
+.form-tip { color: var(--el-text-color-placeholder); font-size: 12px; }
+
+/* 提交记录 */
+.subs-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.mono-id {
+  font-family: 'JetBrains Mono', Consolas, Monaco, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+}
 .rank { font-weight: 700; }
 .rank-1 { color: #e6a23c; }
 .rank-2 { color: #909399; }

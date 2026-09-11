@@ -84,10 +84,12 @@ def _problem_out(p: Problem) -> ProblemOut:
 async def list_problems(
     page: int = 1, size: int = 50,
     mine: int = 0,  # 1 = 出题视角：我管理的（含未公开草稿）；0 = 刷题视角：公开题
+    tag: str | None = None,  # 标签筛选：匹配 tags JSONB 数组任一元素（多个用逗号分隔，取交集）
     db: AsyncSession = Depends(get_db),
     user: User | None = Depends(get_optional_user_import),
 ):
-    """mine=0 刷题视角：公开题目；mine=1 出题视角：我拥有的 + 我团队的（含草稿，ADMIN 全量）"""
+    """mine=0 刷题视角：公开题目；mine=1 出题视角：我拥有的 + 我团队的（含草稿，ADMIN 全量）
+    tag=模拟,数学：题目 tags 数组需包含所有给定标签（JSONB 包含查询）"""
     if mine:
         if user is None:
             return []
@@ -100,6 +102,17 @@ async def list_problems(
                 | ((Problem.owner_type == OwnerType.TEAM) & Problem.owner_id.in_(my_team_ids)))
     else:
         stmt = select(Problem).where(Problem.is_public == True)  # noqa: E712
+    # 标签筛选：tags 为 JSONB 数组，@> 按包含语义匹配（SQLite 测试环境降级为 LIKE）
+    if tag:
+        wanted = [t.strip() for t in tag.split(",") if t.strip()]
+        if wanted:
+            if db.bind.dialect.name == "sqlite":
+                # SQLite：JSON 存文本，退化为逐个 LIKE（测试够用）
+                for t in wanted:
+                    stmt = stmt.where(Problem.tags.like(f'%"{t}"%'))
+            else:
+                from sqlalchemy import text as sa_text
+                stmt = stmt.where(Problem.tags.op("@>")(sa_text(f'[{",".join(json.dumps(t) for t in wanted)}]::jsonb')))
     total = await db.scalar(select(func.count()).select_from(stmt.subquery()))
     rows = await db.scalars(
         stmt.order_by(Problem.display_id).offset((page - 1) * size).limit(size)
@@ -108,6 +121,19 @@ async def list_problems(
     for p in rows:
         items.append(_problem_out(p))
     return items
+
+
+@router.get("/tags")
+async def list_tags(db: AsyncSession = Depends(get_db)):
+    """全站标签云：公开题目的标签及使用次数（降序），供前端筛选面板展示"""
+    rows = await db.scalars(select(Problem.tags).where(Problem.is_public == True))  # noqa: E712
+    counter: dict[str, int] = {}
+    for tags in rows:
+        for t in tags or []:
+            if isinstance(t, str) and t:
+                counter[t] = counter.get(t, 0) + 1
+    items = [{"tag": t, "count": c} for t, c in sorted(counter.items(), key=lambda x: (-x[1], x[0]))]
+    return {"items": items}
 
 
 @router.get("/{problem_id}")

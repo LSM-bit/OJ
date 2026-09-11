@@ -4,9 +4,9 @@
 <template>
   <div class="page">
     <el-table :data="items" v-loading="loading" height="calc(100vh - 140px)">
-      <el-table-column label="ID" width="130">
+      <el-table-column label="ID" width="180">
         <template #default="{ row }">
-          <span class="mono-id" :title="row.id">{{ shortId(row.id) }}</span>
+          <span class="mono-id" :title="row.id">{{ row.id }}</span>
         </template>
       </el-table-column>
       <el-table-column prop="name" label="团队名" min-width="160" />
@@ -23,7 +23,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api } from '../../api/client'
-import { shortId } from '../../utils/format'
 
 const items = ref<any[]>([])
 const loading = ref(false)

@@ -1,7 +1,7 @@
 <!--
-  ProblemDetailView.vue - 题目详情页（参考牛客 OJ 左右分栏布局）
-  左侧：题面（Markdown + KaTeX），可折叠
-  右侧：Monaco 编辑器 + 语言选择 + 提交结果
+  ProblemDetailView.vue - 题目详情页（刷题主入口，参考牛客 OJ 左右分栏布局）
+  左侧：题面（Markdown + KaTeX + 样例），可折叠
+  右侧：引用统一编辑器工作台 CodeWorkbench（语言/编辑器/自测/提交/结果）
 -->
 <template>
   <div v-loading="loading" class="problem-page">
@@ -50,38 +50,11 @@
           </div>
         </div>
 
-        <!-- 右：编辑器 -->
+        <!-- 右：统一编辑器工作台 -->
         <div class="pane pane-right">
-          <div class="pane-head editor-head">
-            <el-select v-model="language" size="small" style="width:160px">
-              <el-option label="Python 3.12" value="python3.12" />
-              <el-option label="C++17" value="cpp17" />
-              <el-option label="C17" value="c17" />
-              <el-option label="Java 21" value="java21" />
-            </el-select>
-            <div class="head-spacer" />
-            <el-button size="small" @click="resetCode">重置</el-button>
-            <el-button v-if="userStore.isLoggedIn" type="primary" size="small"
-                       :loading="submitting" @click="submit">提交</el-button>
-          </div>
-
-          <div class="editor-wrap">
-            <el-alert v-if="!userStore.isLoggedIn" type="warning" :closable="false"
-                      title="请先登录后再提交" show-icon style="margin:12px" />
-            <CodeEditor v-else v-model="code" :language="language" class="editor" />
-          </div>
-
-          <!-- 自测面板（公共组件）：stdin 输入 + 运行输出 -->
-          <SelfTestPanel ref="selftestRef" :problem-id="problem.id"
-                         :language="language" :code="code" />
-
-          <div v-if="lastResult" class="result-bar" :class="lastResult.status">
-            <span class="result-status">{{ lastResult.status_label }}</span>
-            <span class="result-meta">
-              得分 {{ lastResult.score }} ｜ 耗时 {{ lastResult.time_ms }}ms ｜
-              内存 {{ (lastResult.memory_kb / 1024).toFixed(1) }}MB
-            </span>
-          </div>
+          <CodeWorkbench ref="workbenchRef" v-model:code="code" v-model:language="language"
+                         :problem-id="problem.id" :auto-reset-on-lang-change="true"
+                         :result="lastResult" @submit="submit" />
         </div>
       </div>
     </template>
@@ -89,61 +62,40 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { CaretLeft, CaretRight } from '@element-plus/icons-vue'
+import { CaretLeft, CaretRight, CopyDocument } from '@element-plus/icons-vue'
 import md from '../utils/markdown'
 import { api } from '../api/client'
-import { useUserStore } from '../stores/user'
-import CodeEditor from '../components/CodeEditor.vue'
-import SelfTestPanel from '../components/SelfTestPanel.vue'
+import CodeWorkbench from '../components/CodeWorkbench.vue'
 
 const route = useRoute()
-const userStore = useUserStore()
 const problem = ref<any>(null)
 const loading = ref(true)
 const descCollapsed = ref(false)
 const language = ref('python3.12')
 const code = ref('')
-const submitting = ref(false)
 const lastResult = ref<any>(null)
-
-// 自测面板（公共组件）：复制样例输入时预填其 stdin
-const selftestRef = ref<InstanceType<typeof SelfTestPanel> | null>(null)
-
-// 复制样例输入到自测面板的标准输入
-function copyText(text: string) {
-  selftestRef.value?.setStdin(text ?? '')
-  ElMessage.success('已复制到自测运行的标准输入')
-}
-
-const renderedDescription = computed(() =>
-  problem.value ? md.render(problem.value.description ?? '') : '')
 
 const DIFF = ['', '入门', '简单', '中等', '较难', '困难']
 const diffLabel = (d: number) => DIFF[d] ?? '未知'
 const diffTag = (d: number) => (['', 'info', 'success', 'warning', 'danger', 'danger'][d] ?? 'info') as any
 
-// 按语言给一份模板代码
-const TEMPLATES: Record<string, string> = {
-  'python3.12': '# 在此写入你的 Python 代码\n',
-  cpp17: '#include <bits/stdc++.h>\nusing namespace std;\n\nint main() {\n    \n    return 0;\n}\n',
-  c17: '#include <stdio.h>\n\nint main() {\n    \n    return 0;\n}\n',
-  java21: 'import java.util.Scanner;\n\npublic class Main {\n    public static void main(String[] args) {\n        \n    }\n}\n',
-}
+const renderedDescription = computed(() =>
+  problem.value ? md.render(problem.value.description ?? '') : '')
 
-function resetCode() {
-  code.value = TEMPLATES[language.value] ?? ''
+// 工作台引用：复制样例输入时预填自测面板 stdin（透出 setStdin）
+const workbenchRef = ref<InstanceType<typeof CodeWorkbench> | null>(null)
+function copyText(text: string) {
+  workbenchRef.value?.setStdin(text ?? '')
+  ElMessage.success('已复制到自测运行的标准输入')
 }
-
-// 切换语言时自动套用对应语言的初始代码框架
-watch(language, resetCode)
 
 onMounted(async () => {
   try {
     problem.value = await api.get(`/problems/${route.params.id}`)
-    resetCode()
+    code.value = ''
   } catch {
     ElMessage.error('题目不存在')
   } finally {
@@ -156,17 +108,14 @@ async function submit() {
     ElMessage.warning('代码不能为空')
     return
   }
-  submitting.value = true
   try {
     lastResult.value = await api.post('/submissions', {
       problem_id: problem.value.id,
       language: language.value,
       code: code.value,
-    })
+    }) as any
   } catch (e: any) {
     ElMessage.error(e.response?.data?.detail ?? '提交失败')
-  } finally {
-    submitting.value = false
   }
 }
 </script>
@@ -259,36 +208,4 @@ async function submit() {
   max-height: 200px;
   overflow-y: auto;
 }
-
-.editor-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.head-spacer { flex: 1; }
-
-.editor-wrap {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 8px 12px;
-}
-.editor { flex: 1; min-height: 0; }
-
-.result-bar {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 8px 16px;
-  border-top: 1px solid var(--el-border-color-lighter);
-  font-size: 13px;
-}
-.result-status { font-weight: 700; font-size: 14px; }
-.result-bar.ac .result-status { color: var(--el-color-success); }
-.result-bar.wa .result-status, .result-bar.re .result-status,
-.result-bar.tle .result-status, .result-bar.mle .result-status { color: var(--el-color-danger); }
-.result-bar.ce .result-status { color: var(--el-color-warning); }
-.result-meta { color: var(--el-text-color-secondary); }
 </style>

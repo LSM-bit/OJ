@@ -292,6 +292,19 @@ class Announcement(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ContestAnnouncement(Base):
+    """比赛公告：比赛管理者（创建者/团队管理）发布，仅比赛页面内可见"""
+    __tablename__ = "contest_announcements"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, default=snowflake_pk)
+    contest_id: Mapped[int] = mapped_column(
+        ForeignKey("contests.id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(String(128))
+    content: Mapped[str] = mapped_column(Text, default="")
+    author_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class CheckIn(Base):
     """每日打卡：一人一天一条（uq 唯一约束兜底），连续天数应用层计算"""
     __tablename__ = "checkins"

@@ -10,9 +10,9 @@
     </div>
 
     <el-table :data="items" v-loading="loading" height="calc(100vh - 160px)">
-      <el-table-column label="ID" width="130">
+      <el-table-column label="ID" width="180">
         <template #default="{ row }">
-          <span class="mono-id" :title="row.id">{{ shortId(row.id) }}</span>
+          <span class="mono-id" :title="row.id">{{ row.id }}</span>
         </template>
       </el-table-column>
       <el-table-column prop="display_id" label="题号" width="70" />
@@ -21,7 +21,7 @@
         <template #default="{ row }">
           <el-tag size="small" :type="row.owner_type === 'team' ? 'warning' : 'info'"
                   :title="row.owner_id">
-            {{ row.owner_type === 'team' ? `团队#${shortId(row.owner_id)}` : `用户#${shortId(row.owner_id)}` }}
+            {{ row.owner_type === 'team' ? `团队#${row.owner_id}` : `用户#${row.owner_id}` }}
           </el-tag>
         </template>
       </el-table-column>
@@ -51,7 +51,6 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '../../api/client'
-import { shortId } from '../../utils/format'
 
 const items = ref<any[]>([])
 const q = ref('')

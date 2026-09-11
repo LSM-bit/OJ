@@ -16,19 +16,26 @@
     </div>
 
     <el-table :data="items" v-loading="loading" height="calc(100vh - 220px)" size="small">
-      <el-table-column label="ID" width="130">
+      <el-table-column label="ID" width="180">
         <template #default="{ row }">
-          <span class="mono-id" :title="row.id">{{ shortId(row.id) }}</span>
+          <span class="mono-id" :title="row.id">{{ row.id }}</span>
         </template>
       </el-table-column>
-      <el-table-column prop="username" label="用户" width="110" />
+      <el-table-column label="用户" width="200">
+        <template #default="{ row }">
+          <div class="user-cell">
+            <span class="mono-id" :title="row.user_id">{{ row.user_id }}</span>
+            <span class="username">{{ row.username }}</span>
+          </div>
+        </template>
+      </el-table-column>
       <el-table-column label="题目" min-width="160">
         <template #default="{ row }">
-          <span :title="row.problem_id">#{{ shortId(row.problem_id) }} {{ row.problem_title }}</span>
+          <span :title="row.problem_id">#{{ row.problem_id }} {{ row.problem_title }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="比赛" width="80">
-        <template #default="{ row }">{{ row.contest_id ? `#${shortId(row.contest_id)}` : '-' }}</template>
+      <el-table-column label="比赛" width="200">
+        <template #default="{ row }">{{ row.contest_id ? `#${row.contest_id}` : '-' }}</template>
       </el-table-column>
       <el-table-column prop="language" label="语言" width="100" />
       <el-table-column label="状态" width="100">
@@ -87,7 +94,6 @@
 import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '../../api/client'
-import { shortId } from '../../utils/format'
 
 const STATUS_OPTIONS: Record<string, string> = {
   waiting: '等待判题', judging: '判题中', ac: '通过', wa: '答案错误', tle: '超时',
@@ -179,6 +185,19 @@ onUnmounted(() => clearInterval(timer))
 .mono-id {
   font-family: 'JetBrains Mono', Consolas, Menlo, monospace;
   font-size: 12px;
+  white-space: nowrap;
+}
+.user-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.user-cell .username {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .code-block {

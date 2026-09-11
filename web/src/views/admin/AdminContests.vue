@@ -4,9 +4,9 @@
 <template>
   <div class="page">
     <el-table :data="items" v-loading="loading" height="calc(100vh - 140px)">
-      <el-table-column label="ID" width="130">
+      <el-table-column label="ID" width="180">
         <template #default="{ row }">
-          <span class="mono-id" :title="row.id">{{ shortId(row.id) }}</span>
+          <span class="mono-id" :title="row.id">{{ row.id }}</span>
         </template>
       </el-table-column>
       <el-table-column prop="title" label="标题" min-width="200" />
@@ -25,7 +25,7 @@
       <el-table-column label="归属" width="130">
         <template #default="{ row }">
           <span :title="row.owner_id">
-            {{ row.owner_type === 'team' ? `团队#${shortId(row.owner_id)}` : `用户#${shortId(row.owner_id)}` }}
+            {{ row.owner_type === 'team' ? `团队#${row.owner_id}` : `用户#${row.owner_id}` }}
           </span>
         </template>
       </el-table-column>
@@ -47,7 +47,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api } from '../../api/client'
-import { shortId } from '../../utils/format'
 
 const items = ref<any[]>([])
 const loading = ref(false)

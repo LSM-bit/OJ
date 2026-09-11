@@ -10,9 +10,9 @@
     </div>
 
     <el-table :data="items" v-loading="loading" height="calc(100vh - 160px)">
-      <el-table-column label="ID" width="130">
+      <el-table-column label="ID" width="180">
         <template #default="{ row }">
-          <span class="mono-id" :title="row.id">{{ shortId(row.id) }}</span>
+          <span class="mono-id" :title="row.id">{{ row.id }}</span>
         </template>
       </el-table-column>
       <el-table-column prop="username" label="用户名" min-width="120" />
@@ -59,7 +59,6 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../../api/client'
-import { shortId } from '../../utils/format'
 
 const items = ref<any[]>([])
 const total = ref(0)

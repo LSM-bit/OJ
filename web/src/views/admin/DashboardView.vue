@@ -14,9 +14,9 @@
     <div class="section">
       <h4>最近提交</h4>
       <el-table :data="recent" size="small" height="calc(100vh - 320px)">
-        <el-table-column label="ID" width="130">
+        <el-table-column label="ID" width="180">
           <template #default="{ row }">
-            <span class="mono-id" :title="row.id">{{ shortId(row.id) }}</span>
+            <span class="mono-id" :title="row.id">{{ row.id }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="username" label="用户" width="120" />
@@ -37,7 +37,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../../api/client'
-import { shortId } from '../../utils/format'
 
 const overview = ref<any>({})
 const recent = ref<any[]>([])
