@@ -190,11 +190,49 @@
             <el-table-column label="提交时间" min-width="140">
               <template #default="{ row }">{{ fmtFull(row.submitted_at) }}</template>
             </el-table-column>
+            <el-table-column label="操作" width="70" align="center">
+              <template #default="{ row }">
+                <el-button size="small" text type="primary" @click="openSubDetail(row)">详情</el-button>
+              </template>
+            </el-table-column>
           </el-table>
           <el-pagination v-if="subs.total > subsPageSize" class="pager"
                          layout="total, prev, pager, next" :total="subs.total"
                          :page-size="subsPageSize" :current-page="subsPage"
                          @current-change="(p: number) => { subsPage = p; loadSubs() }" />
+
+          <!-- 提交详情弹窗 -->
+          <el-dialog v-model="showSubDetail" title="提交详情" width="720">
+            <template v-if="subDetail">
+              <el-descriptions :column="3" size="small" border>
+                <el-descriptions-item label="ID">
+                  <span class="mono-id" :title="subDetail.id">{{ shortId(subDetail.id) }}</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="题目">{{ subDetail.problem_alias }}</el-descriptions-item>
+                <el-descriptions-item label="语言">{{ subDetail.language }}</el-descriptions-item>
+                <el-descriptions-item label="状态">
+                  <el-tag size="small" :type="statusTag(subDetail.status)">{{ subDetail.status_label }}</el-tag>
+                </el-descriptions-item>
+                <el-descriptions-item label="得分">{{ subDetail.score }}</el-descriptions-item>
+                <el-descriptions-item label="耗时/内存">
+                  {{ subDetail.time_ms }} ms / {{ subDetail.memory_kb }} KB
+                </el-descriptions-item>
+              </el-descriptions>
+              <p v-if="subDetail.error_message" class="err-msg">错误信息：{{ subDetail.error_message }}</p>
+              <h4>源码</h4>
+              <pre class="code-block">{{ subDetail.code ?? '（旧提交未留存源码）' }}</pre>
+              <h4>测试点</h4>
+              <el-table v-if="subDetail.detail?.length" :data="subDetail.detail" size="small" max-height="220">
+                <el-table-column prop="idx" label="#" width="60" />
+                <el-table-column prop="status" label="状态" />
+                <el-table-column prop="time_used_ms" label="耗时(ms)" />
+                <el-table-column prop="memory_used_kb" label="内存(KB)" />
+              </el-table>
+              <p v-else class="form-tip">
+                {{ contest.phase === 'running' ? '比赛结束后可见测试点明细' : '暂无测试点数据' }}
+              </p>
+            </template>
+          </el-dialog>
         </el-tab-pane>
       </el-tabs>
 
@@ -286,6 +324,16 @@ async function loadSubs() {
 async function reloadSubs() {
   subsPage.value = 1
   await loadSubs()
+}
+
+// 提交详情弹窗（源码/测试点明细，由后端按权限与比赛阶段裁剪）
+const showSubDetail = ref(false)
+const subDetail = ref<any>(null)
+
+async function openSubDetail(row: any) {
+  subDetail.value = await api.get(
+    `/contests/${route.params.id}/submissions/${row.id}`) as any
+  showSubDetail.value = true
 }
 
 // 切到「提交记录」tab 时加载数据（lazy tab 首次激活才渲染，需主动触发）
@@ -568,6 +616,17 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
   font-family: 'JetBrains Mono', Consolas, Monaco, monospace;
   font-size: 12px;
   white-space: nowrap;
+}
+.err-msg { color: var(--el-color-danger); font-size: 13px; }
+.code-block {
+  background: #f5f7fa;
+  padding: 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 .rank { font-weight: 700; }
 .rank-1 { color: #e6a23c; }

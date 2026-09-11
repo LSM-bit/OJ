@@ -264,6 +264,45 @@ async def contest_submissions(
     return {"total": total or 0, "items": items, "can_view_all": manageable}
 
 
+@router.get("/{contest_id}/submissions/{submission_id}")
+async def contest_submission_detail(
+    contest_id: int, submission_id: int,
+    c: Contest = Depends(ContestAccess("view")),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """比赛内提交详情（源码/测试点明细）
+    可见范围与列表一致：本人/比赛管理者/ADMIN，其余 404。
+    - 源码：本人与管理者随时可见
+    - 测试点明细与错误信息：管理者随时可见；本人仅比赛结束后可见
+      （进行中隐藏防打表；编译错误信息不含测试数据，对本人始终可见）"""
+    sub = await db.get(Submission, submission_id)
+    if sub is None or sub.contest_id != contest_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "提交不存在")
+    manageable = await _is_manageable(db, user, c)
+    if not (sub.user_id == user.id or manageable):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "提交不存在")
+
+    d = sub.detail or {}
+    full = manageable or _aware(c.end_at) <= datetime.now(timezone.utc)
+    if full or sub.status == SubmissionStatus.COMPILE_ERROR:
+        error_message = d.get("error_message", "")
+    else:
+        error_message = ""
+    owner = await db.get(User, sub.user_id)
+    cp = await db.scalar(select(ContestProblem).where(
+        ContestProblem.contest_id == contest_id,
+        ContestProblem.problem_id == sub.problem_id))
+    return {
+        **_to_out(sub).model_dump(),
+        "username": owner.username if owner else "?",
+        "problem_alias": cp.alias if cp else "?",
+        "code": sub.code,  # 旧提交可能为 None（未留存源码）
+        "detail": d.get("cases", []) if full else [],
+        "error_message": error_message,
+    }
+
+
 @router.post("/{contest_id}/problems/{alias}/submit", response_model=dict, status_code=201)
 async def contest_submit(
     contest_id: int, alias: str,
