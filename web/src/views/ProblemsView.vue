@@ -54,6 +54,13 @@
 
       <!-- 右：题目表 -->
       <div class="table-panel">
+        <!-- 搜索行：标题关键词（回车/清空即搜） -->
+        <div class="search-row">
+          <el-input v-model="keyword" placeholder="搜索题目标题 / 题号" clearable
+                    :prefix-icon="Search" class="kw-input"
+                    @keyup.enter="doSearch" @clear="doSearch" />
+          <el-button type="primary" @click="doSearch">搜索</el-button>
+        </div>
         <!-- 标签筛选：候选列表默认收起，点击搜索框展开、点击外部收起（下拉式）；
              模糊过滤 + 点击行选中，多标签取交集，选中状态同步到 URL ?tag= -->
         <div v-if="tagCloud.length" ref="tagFilterRef" class="tag-filter">
@@ -112,6 +119,10 @@
         </el-table>
         <el-empty v-if="!loading && problems.length === 0"
                   :description="selectedTags.size ? '没有符合所选标签的题目' : '暂无题目'" />
+        <!-- 分页：full=1 拿 {total, items}，任意页都能翻到 -->
+        <el-pagination v-if="total > pageSize" class="pager" layout="total, prev, pager, next, jumper"
+                       :total="total" :page-size="pageSize" :current-page="page"
+                       @current-change="(p: number) => { page = p; loadProblems() }" />
       </div>
     </div>
 
@@ -147,6 +158,12 @@ const problems = ref<any[]>([])
 const loading = ref(false)
 const jumpId = ref('')
 
+// 分页 + 关键词搜索（后端 GET /problems?full=1&page=&size=&q=&tag= → {total, items}）
+const keyword = ref((typeof route.query.q === 'string' ? route.query.q : ''))
+const page = ref(1)
+const pageSize = 50
+const total = ref(0)
+
 // 标签云与已选标签（Set 保证多选去重）
 const tagCloud = ref<{ tag: string; count: number }[]>([])
 const selectedTags = reactive(new Set<string>())
@@ -166,10 +183,11 @@ function onDocClick(e: MouseEvent) {
 onMounted(() => document.addEventListener('click', onDocClick))
 onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
-// 点击标签行：切换选中状态并重新加载列表（多标签 = 交集）
+// 点击标签行：切换选中状态并重新加载列表（多标签 = 交集）；筛选变了回第 1 页
 async function toggleTag(tag: string) {
   if (selectedTags.has(tag)) selectedTags.delete(tag)
   else selectedTags.add(tag)
+  page.value = 1
   await loadProblems()
 }
 
@@ -183,17 +201,30 @@ const visibleTags = computed(() => {
 
 function clearTags() {
   selectedTags.clear()
+  page.value = 1
+  loadProblems()
+}
+
+// 关键词搜索（标题模糊 / 纯数字同时主题号）：回到第 1 页再拉
+function doSearch() {
+  page.value = 1
   loadProblems()
 }
 
 async function loadProblems() {
   loading.value = true
   try {
-    const params: Record<string, any> = {}
+    const params: Record<string, any> = { full: 1, page: page.value, size: pageSize }
     if (selectedTags.size) params.tag = [...selectedTags].join(',')
-    // 选中标签同步进 URL（浏览器前进/后退、分享链接都能还原筛选状态）
-    router.replace({ query: { ...route.query, tag: selectedTags.size ? [...selectedTags].join(',') : undefined } })
-    problems.value = await api.get('/problems', { params }) as any
+    const kw = keyword.value.trim()
+    if (kw) params.q = kw
+    // 筛选/搜索状态同步进 URL（前进/后退、分享链接都能还原）
+    router.replace({ query: { ...route.query,
+      tag: selectedTags.size ? [...selectedTags].join(',') : undefined,
+      q: kw || undefined } })
+    const r = await api.get('/problems', { params }) as any
+    problems.value = r.items ?? []
+    total.value = r.total ?? 0
   } finally {
     loading.value = false
   }
@@ -216,26 +247,55 @@ function viewAnnounce(a: any) {
   showAnn.value = true
 }
 
-// 指定题号跳转：在已加载的公开题目中找 display_id
-function jump() {
+// 指定题号跳转：走后端 did= 精确查（不受当前分页限制，全库任意题号可达）
+async function jump() {
   const n = Number(jumpId.value)
   if (!jumpId.value.trim() || Number.isNaN(n)) {
     ElMessage.warning('请输入题号')
     return
   }
-  const p = problems.value.find((x) => x.display_id === n)
-  if (!p) {
-    ElMessage.warning(`题号 #${n} 不存在或未公开`)
-    return
+  try {
+    const r = await api.get('/problems', { params: { full: 1, did: n } }) as any
+    const p = (r.items ?? [])[0]
+    if (!p) {
+      ElMessage.warning(`题号 #${n} 不存在或未公开`)
+      return
+    }
+    router.push(`/problems/${p.id}`)
+  } catch {
+    ElMessage.error('查询失败，请稍后再试')
   }
-  router.push(`/problems/${p.id}`)
 }
 
-// 随机一题：等概率取一道公开题
-function randomJump() {
-  if (problems.value.length === 0) return
-  const p = problems.value[Math.floor(Math.random() * problems.value.length)]
-  router.push(`/problems/${p.id}`)
+// 随机一题：在当前筛选视角内取最大公开题号，随机 did 逐个试跳（题号有空洞，最多试 20 次）
+async function randomJump() {
+  if (total.value === 0) return
+  let maxDid = 0
+  try {
+    // 列表按题号升序：offset = total-1 的那条即当前视角最大公开题号（page=total, size=1）
+    const r0 = await api.get('/problems', { params: { full: 1, page: total.value, size: 1,
+      tag: selectedTags.size ? [...selectedTags].join(',') : undefined,
+      q: keyword.value.trim() || undefined } }) as any
+    maxDid = (r0.items ?? [])[0]?.display_id ?? 0
+  } catch { /* ignore */ }
+  if (!maxDid) return
+  // 随机候选也遵循当前标签/关键词筛选
+  const filter: Record<string, any> = {
+    full: 1,
+    tag: selectedTags.size ? [...selectedTags].join(',') : undefined,
+    q: keyword.value.trim() || undefined }
+  for (let i = 0; i < 20; i++) {
+    const n = 1 + Math.floor(Math.random() * maxDid)
+    try {
+      const r = await api.get('/problems', { params: { ...filter, did: n } }) as any
+      const p = (r.items ?? [])[0]
+      if (p) {
+        router.push(`/problems/${p.id}`)
+        return
+      }
+    } catch { /* ignore，继续试下一个 */ }
+  }
+  ElMessage.warning('随机选题失败，请重试')
 }
 
 const DIFF = ['', '入门', '简单', '中等', '较难', '困难']
@@ -359,6 +419,17 @@ onMounted(async () => {
   font-size: 15px;
 }
 .table-panel { flex: 1; min-width: 0; }
+/* 搜索行 + 分页条 */
+.search-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.kw-input { max-width: 320px; }
+.pager {
+  margin-top: 12px;
+  justify-content: flex-end;
+}
 .fill-table {
   width: 100%;
 }

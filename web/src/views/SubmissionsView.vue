@@ -89,10 +89,11 @@ function reload() {
 
 async function loadProblems() {
   // 候选 = 公开题 + 我管理的题（含草稿）：对草稿/私有题的提交也要能筛到、能显示标题
+  // size=1000：默认分页只有 50 条，标题映射/筛选会缺题（后端上限 1000）
   try {
     const [pub, mine] = await Promise.all([
-      api.get('/problems') as Promise<any[]>,
-      userStore.isLoggedIn ? (api.get('/problems', { params: { mine: 1 } }) as Promise<any[]>)
+      api.get('/problems', { params: { size: 1000 } }) as Promise<any[]>,
+      userStore.isLoggedIn ? (api.get('/problems', { params: { mine: 1, size: 1000 } }) as Promise<any[]>)
                            : Promise.resolve([] as any[]),
     ])
     const seen = new Set<string>()

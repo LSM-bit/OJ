@@ -16,6 +16,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     UploadFile,
     status,
 )
@@ -86,22 +87,27 @@ def _problem_out(p: Problem) -> ProblemOut:
     return out
 
 
-@router.get("", response_model=list[ProblemOut])
+@router.get("")
 async def list_problems(
-    page: int = 1, size: int = 50,
+    page: int = 1, size: int = Query(default=50, ge=1, le=1000),
     mine: int = 0,  # 1 = 出题视角：我管理的（含未公开草稿）；0 = 刷题视角：公开题
     tag: str | None = None,  # 标签筛选：匹配 tags JSONB 数组任一元素（多个用逗号分隔，取交集）
     archived: int = 0,  # 1 = 仅看已归档题目（mine=1 出题视角下有效）；默认一律排除归档题
+    full: int = 0,  # 1 = 返回 {total, items}（分页页需要总数）；默认返回裸数组（兼容旧调用方）
+    did: int | None = None,  # 按题号精确查（题号跳转用，走当前视角的可见性规则）
+    q: str | None = None,  # 标题模糊搜索（ilike）/ 纯数字时同时主题号
     db: AsyncSession = Depends(get_db),
     user: User | None = Depends(get_optional_user_import),
 ):
     """mine=0 刷题视角：公开题目；mine=1 出题视角：我拥有的 + 我团队的（含草稿，ADMIN 全量）
     tag=模拟,数学：题目 tags 数组需包含所有给定标签（JSONB 包含查询）
-    归档题不进列表；mine=1 且 archived=1 时只看归档题（归档/恢复管理入口）"""
+    归档题不进列表；mine=1 且 archived=1 时只看归档题（归档/恢复管理入口）
+    page/size 分页（size 上限 1000）；did=N 按题号精确查；q=关键词标题模糊搜；
+    full=1 时响应为 {"total": 总数, "items": [...]}，否则裸数组（兼容旧前端）"""
     is_archived = bool(archived)
     if mine:
         if user is None:
-            return []
+            return {"total": 0, "items": []} if full else []
         if user.role == UserRole.ADMIN:
             stmt = select(Problem)
         else:
@@ -127,14 +133,25 @@ async def list_problems(
                     stmt = stmt.where(Problem.tags.like(f'%{json.dumps(t)}%'))
             else:
                 from sqlalchemy import text as sa_text
-                stmt = stmt.where(Problem.tags.op("@>")(sa_text(f'[{",".join(json.dumps(t) for t in wanted)}]::jsonb')))
+                # JSON 数组字面量（多标签 = 数组包含全部）；json.dumps 已把非 ASCII
+                # 转义成 \uXXXX，再把单引号翻倍防 SQL 字面量逃逸
+                arr = '[' + ','.join(json.dumps(t) for t in wanted) + ']'
+                stmt = stmt.where(Problem.tags.op("@>")(sa_text(f"'{arr.replace(chr(39), chr(39)*2)}'::jsonb")))
+    if did is not None:  # 题号精确查（跳转用）
+        stmt = stmt.where(Problem.display_id == did)
+    if q:  # 标题模糊搜索；纯数字关键词同时主题号（ilike 模式需转义 % _ 防注入通配）
+        kw = f"%{q.strip().replace(chr(92), '').replace('%', '').replace('_', '')}%"
+        cond = Problem.title.ilike(kw)
+        if q.strip().isdigit():
+            cond = cond | (Problem.display_id == int(q.strip()))
+        stmt = stmt.where(cond)
     total = await db.scalar(select(func.count()).select_from(stmt.subquery()))
     rows = await db.scalars(
         stmt.order_by(Problem.display_id).offset((page - 1) * size).limit(size)
     )
-    items = []
-    for p in rows:
-        items.append(_problem_out(p))
+    items = [_problem_out(p) for p in rows]
+    if full:
+        return {"total": total or 0, "items": items}
     return items
 
 

@@ -106,7 +106,8 @@ async function refresh() {
 onMounted(async () => {
   try {
     sub.value = await api.get(`/submissions/${route.params.id}`) as any
-    problems.value = await api.get('/problems') as any
+    // size=1000：只为拿题号→标题映射，默认分页 50 条会查不到新题（显示成 #id）
+    problems.value = await api.get('/problems', { params: { size: 1000 } }) as any
     if (['waiting', 'judging'].includes(sub.value.status)) {
       timer = window.setInterval(refresh, 2000)
     }
