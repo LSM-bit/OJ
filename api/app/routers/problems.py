@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.judge_gateway.gen.judge.v1 import judge_pb2
 from app.judge_gateway.server import get_gateway
-from app.models import OwnerType, Problem, Submission, SubmissionStatus, Testcase, TeamMember, User, UserRole
+from app.models import OwnerType, Problem, Submission, SubmissionStatus, Tag, Testcase, TeamMember, User, UserRole
 from app.services.access_deps import ProblemAccess
 from app.services.auth import CurrentUser, ProblemSetter, get_optional_user as get_optional_user_import
 from app.services.problem_data import data_dir, write_problem_data
@@ -114,9 +114,11 @@ async def list_problems(
         wanted = [t.strip() for t in tag.split(",") if t.strip()]
         if wanted:
             if db.bind.dialect.name == "sqlite":
-                # SQLite：JSON 存文本，退化为逐个 LIKE（测试够用）
+                # SQLite：JSON 列按 json.dumps 默认 ensure_ascii=True 存转义文本
+                # （"模拟" 存成 "模拟"），LIKE 模式需用同一转义形式；
+                # SQLite LIKE 对 ASCII 大小写不敏感，a-f 十六进制无需额外归一
                 for t in wanted:
-                    stmt = stmt.where(Problem.tags.like(f'%"{t}"%'))
+                    stmt = stmt.where(Problem.tags.like(f'%{json.dumps(t)}%'))
             else:
                 from sqlalchemy import text as sa_text
                 stmt = stmt.where(Problem.tags.op("@>")(sa_text(f'[{",".join(json.dumps(t) for t in wanted)}]::jsonb')))
@@ -138,11 +140,42 @@ async def list_tags(db: AsyncSession = Depends(get_db)):
         Problem.archived == False))  # noqa: E712
     counter: dict[str, int] = {}
     for tags in rows:
-        for t in tags or []:
+        # 同一题内重复标签只计一次（标签云语义：有多少道题用了它）
+        for t in set(tags or []):
             if isinstance(t, str) and t:
                 counter[t] = counter.get(t, 0) + 1
     items = [{"tag": t, "count": c} for t, c in sorted(counter.items(), key=lambda x: (-x[1], x[0]))]
     return {"items": items}
+
+
+class TagCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=32)
+
+
+@router.get("/tags/search")
+async def search_tags(q: str = "", db: AsyncSession = Depends(get_db)):
+    """标签实例搜索（出题弹窗 TagPicker 用）：从 tags 表按名称模糊匹配，空关键字返回全量（公开接口）"""
+    stmt = select(Tag)
+    if q.strip():
+        stmt = stmt.where(Tag.name.ilike(f"%{q.strip()}%"))
+    rows = await db.scalars(stmt.order_by(Tag.name).limit(100))
+    return [{"id": t.id, "name": t.name} for t in rows]
+
+
+@router.post("/tags", status_code=201)
+async def create_tag(body: TagCreate, db: AsyncSession = Depends(get_db), user: User = CurrentUser):
+    """创建标签实例（前台幂等：重名不报错，直接返回已有实例；管理端另走 /admin/tags 显式校验冲突）"""
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "标签名不能为空")
+    dup = await db.scalar(select(Tag).where(Tag.name == name))
+    if dup is not None:
+        return {"id": dup.id, "name": dup.name}
+    t = Tag(name=name)
+    db.add(t)
+    await db.commit()
+    await db.refresh(t)
+    return {"id": t.id, "name": t.name}
 
 
 @router.get("/{problem_id}")

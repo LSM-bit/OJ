@@ -284,6 +284,43 @@ async def test_tag_cloud_counts_only_public(client, normal_user, gateway):
     assert [x["tag"] for x in items] == ["数学", "模拟"]
 
 
+# ---------------- 标签实例（搜索 / 新建） ----------------
+
+async def test_tag_search_and_create(client, normal_user):
+    """标签实例：搜索匹配 / 未登录可搜索 / 新建需登录 / 重名幂等"""
+    # 预置两个标签实例
+    r = await client.post("/problems/tags", json={"name": "动态规划"},
+                          headers=await auth_header(normal_user))
+    assert r.status_code == 201, r.text
+    dp = r.json()
+    assert dp["name"] == "动态规划" and dp["id"]
+
+    # 重名创建幂等返回已有实例
+    r = await client.post("/problems/tags", json={"name": " 动态规划 "},
+                          headers=await auth_header(normal_user))
+    assert r.status_code == 201
+    assert int(r.json()["id"]) == int(dp["id"])
+
+    # 新建需要登录
+    r = await client.post("/problems/tags", json={"name": "贪心"})
+    assert r.status_code == 401
+
+    # 搜索：未登录可用；包含匹配；空 q 返回全量
+    r = await client.get("/problems/tags/search", params={"q": "规划"})
+    assert r.status_code == 200
+    assert [x["name"] for x in r.json()] == ["动态规划"]
+    r = await client.get("/problems/tags/search")
+    assert {x["name"] for x in r.json()} == {"动态规划"}
+    # 搜不到的：空列表（前端弹窗里提供"创建该标签"入口）
+    r = await client.get("/problems/tags/search", params={"q": "不存在"})
+    assert r.json() == []
+
+    # 名字超长 → 422
+    r = await client.post("/problems/tags", json={"name": "x" * 33},
+                          headers=await auth_header(normal_user))
+    assert r.status_code == 422
+
+
 # ---------------- 归档 ----------------
 
 async def test_archive_problem_flow(client, normal_user, db_sessionmaker, gateway):

@@ -37,6 +37,7 @@ const router = createRouter({
         { path: '', name: 'admin-dashboard', component: () => import('../views/admin/DashboardView.vue') },
         { path: 'users', name: 'admin-users', component: () => import('../views/admin/AdminUsers.vue') },
         { path: 'problems', name: 'admin-problems', component: () => import('../views/admin/AdminProblems.vue') },
+        { path: 'tags', name: 'admin-tags', component: () => import('../views/admin/AdminTags.vue') },
         { path: 'contests', name: 'admin-contests', component: () => import('../views/admin/AdminContests.vue') },
         { path: 'playlists', name: 'admin-playlists', component: () => import('../views/admin/AdminPlaylists.vue') },
         { path: 'teams', name: 'admin-teams', component: () => import('../views/admin/AdminTeams.vue') },

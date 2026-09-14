@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # 文件: api/tests/test_admin.py
-# 用途: 管理后台接口测试：权限边界/概况统计/用户管理/题目管理/单条重判/节点监控
+# 用途: 管理后台接口测试：权限边界/概况统计/用户管理/题目管理/标签管理/单条重判/节点监控
 
 import pytest
 from httpx import AsyncClient
@@ -118,6 +118,94 @@ async def test_admin_problems_and_contests_lists(client, normal_user, admin_user
 
     r = await client.get("/admin/contests", headers=await auth_header(admin_user))
     assert "后台赛" in {c["title"] for c in r.json()["items"]}
+
+
+async def test_admin_tag_manage(client, normal_user, admin_user):
+    """标签管理：列表（含使用题数）/重命名同步题目 tags/删除移除题目 tags/重名 400/权限"""
+    # 建 3 个标签实例，其中两个挂在题目上
+    async def _mk(name: str) -> dict:
+        r = await client.post("/problems/tags", json={"name": name},
+                              headers=await auth_header(normal_user))
+        assert r.status_code == 201, r.text
+        return r.json()
+    t_memo = await _mk("后台动态规划")
+    t_greedy = await _mk("后台贪心")
+    orphan = await _mk("孤儿标签")
+
+    # 后台新建：成功 / 重名 400
+    r = await client.post("/admin/tags", json={"name": "后台新建标签"},
+                          headers=await auth_header(admin_user))
+    assert r.status_code == 201, r.text
+    assert r.json()["name"] == "后台新建标签"
+    assert r.json()["problem_count"] == 0
+    r = await client.post("/admin/tags", json={"name": " 后台新建标签 "},
+                          headers=await auth_header(admin_user))
+    assert r.status_code == 400
+    r = await client.post("/admin/tags", json={"name": ""},
+                          headers=await auth_header(admin_user))
+    assert r.status_code == 422
+
+    # 题目挂上两个标签（直接建草稿即可，无需发布）
+    r = await client.post("/problems", json={"title": "标签管理题", "description": "d",
+                                             "tags": [t_memo["name"], t_greedy["name"]]},
+                          headers=await auth_header(normal_user))
+    assert r.status_code == 201, r.text
+
+    # 列表：使用题数 + 搜索
+    r = await client.get("/admin/tags", headers=await auth_header(admin_user))
+    assert r.status_code == 200, r.text
+    by_name = {x["name"]: x for x in r.json()["items"]}
+    assert by_name[t_memo["name"]]["problem_count"] == 1
+    assert by_name[orphan["name"]]["problem_count"] == 0
+
+    r = await client.get("/admin/tags?q=后台动态", headers=await auth_header(admin_user))
+    names = {x["name"] for x in r.json()["items"]}
+    assert t_memo["name"] in names and t_greedy["name"] not in names
+
+    # 普通用户 403
+    r = await client.get("/admin/tags", headers=await auth_header(normal_user))
+    assert r.status_code in (401, 403)
+
+    # 重命名：题目 tags 里的旧名同步替换
+    new_name = "后台DP"
+    r = await client.put(f"/admin/tags/{t_memo['id']}", json={"name": new_name},
+                         headers=await auth_header(admin_user))
+    assert r.status_code == 200, r.text
+    assert r.json()["touched"] == 1
+
+    # 题目 tags 里的旧名已同步替换（mine=1 出题视角可看草稿）
+    r = await client.get("/problems?mine=1", headers=await auth_header(normal_user))
+    assert r.status_code == 200, r.text
+    p = [x for x in r.json() if x["title"] == "标签管理题"][0]
+    assert new_name in p["tags"] and t_memo["name"] not in p["tags"]
+    assert t_greedy["name"] in p["tags"]
+
+    # 重命名成已存在的名字 → 400
+    r = await client.put(f"/admin/tags/{t_greedy['id']}", json={"name": new_name},
+                         headers=await auth_header(admin_user))
+    assert r.status_code == 400
+
+    # 删除：题目 tags 中移除该名，孤儿标签也可删
+    r = await client.delete(f"/admin/tags/{t_greedy['id']}",
+                            headers=await auth_header(admin_user))
+    assert r.status_code == 200, r.text
+    assert r.json()["touched"] == 1
+    r = await client.delete(f"/admin/tags/{orphan['id']}",
+                            headers=await auth_header(admin_user))
+    assert r.status_code == 200
+    assert r.json()["touched"] == 0
+
+    r = await client.get("/problems?mine=1", headers=await auth_header(normal_user))
+    p = [x for x in r.json() if x["title"] == "标签管理题"][0]
+    assert new_name in p["tags"] and t_greedy["name"] not in p["tags"]
+
+    # 删除后实例已不存在（搜索不到）
+    r = await client.get("/problems/tags/search?q=后台贪心")
+    assert r.json() == []
+
+    # 后台新建的标签对前台弹窗搜索可见
+    r = await client.get("/problems/tags/search?q=后台新建标签")
+    assert [x["name"] for x in r.json()] == ["后台新建标签"]
 
 
 async def test_rejudge_flow(client, normal_user, admin_user, gateway):

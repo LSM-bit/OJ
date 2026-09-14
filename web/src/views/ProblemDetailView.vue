@@ -22,6 +22,12 @@
               <el-tag :type="diffTag(problem.difficulty)" size="small" style="margin-left:8px">
                 {{ diffLabel(problem.difficulty) }}
               </el-tag>
+              <!-- 标签（点击跳列表页并按该标签筛选） -->
+              <el-tag v-for="t in problem.tags ?? []" :key="t" size="small" effect="plain" type="info"
+                      class="problem-tag"
+                      @click.stop="$router.push({ path: '/problems', query: { tag: t } })">
+                {{ t }}
+              </el-tag>
             </span>
           </div>
           <div v-show="!descCollapsed" class="pane-body">
@@ -179,6 +185,9 @@ async function submit() {
   padding: 12px 16px;
 }
 .limits { color: var(--el-text-color-secondary); font-size: 13px; margin-top: 0; }
+
+/* 题目标签：可点击跳列表筛选 */
+.problem-tag { cursor: pointer; margin-left: 6px; }
 
 /* 样例展示 */
 .samples-title { margin: 18px 0 8px; }

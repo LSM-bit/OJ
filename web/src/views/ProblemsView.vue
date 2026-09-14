@@ -54,23 +54,64 @@
 
       <!-- 右：题目表 -->
       <div class="table-panel">
+        <!-- 标签筛选：候选列表默认收起，点击搜索框展开、点击外部收起（下拉式）；
+             模糊过滤 + 点击行选中，多标签取交集，选中状态同步到 URL ?tag= -->
+        <div v-if="tagCloud.length" ref="tagFilterRef" class="tag-filter">
+          <el-input v-model="tagSearch" placeholder="点击搜索标签" clearable
+                    :prefix-icon="Search" @focus="listVisible = true" />
+          <div v-if="selectedTags.size" class="picked-row">
+            <span class="picked-label">已选 {{ selectedTags.size }}：</span>
+            <el-tag v-for="t in [...selectedTags]" :key="t" size="small" closable
+                    @close="toggleTag(t)">{{ t }}</el-tag>
+            <el-button link type="danger" size="small" class="clear-btn" @click="clearTags">
+              清除筛选
+            </el-button>
+          </div>
+          <div v-show="listVisible" class="tag-list">
+            <div v-for="t in visibleTags" :key="t.tag" class="tag-row"
+                 :class="{ picked: selectedTags.has(t.tag) }" @click="toggleTag(t.tag)">
+              <span class="tag-name">{{ t.tag }}</span>
+              <span class="tag-meta">
+                <span class="tag-count">{{ t.count }} 题</span>
+                <el-icon v-if="selectedTags.has(t.tag)" class="check"><Check /></el-icon>
+              </span>
+            </div>
+            <div v-if="!visibleTags.length" class="no-tag empty">无匹配标签</div>
+          </div>
+        </div>
         <el-table :data="problems" stripe class="fill-table">
           <el-table-column prop="display_id" label="#" width="80" />
-          <el-table-column prop="title" label="标题" min-width="240">
+          <el-table-column prop="title" label="标题" min-width="200">
             <template #default="{ row }">
               <router-link :to="`/problems/${row.id}`" class="title-link">{{ row.title }}</router-link>
             </template>
           </el-table-column>
-          <el-table-column prop="difficulty" label="难度" width="100">
+          <el-table-column label="标签" min-width="160">
+            <template #default="{ row }">
+              <template v-if="row.tags && row.tags.length">
+                <el-tag v-for="t in row.tags.slice(0, 3)" :key="t" size="small" effect="plain"
+                        class="row-tag" @click="toggleTag(t)">{{ t }}</el-tag>
+                <el-tooltip v-if="row.tags.length > 3" :content="row.tags.slice(3).join('、')"
+                            placement="top">
+                  <el-tag size="small" effect="plain" type="info" class="row-tag">
+                    +{{ row.tags.length - 3 }}
+                  </el-tag>
+                </el-tooltip>
+              </template>
+              <span v-else class="no-tag">-</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="difficulty" label="难度" width="90">
             <template #default="{ row }">
               <el-tag :type="diffTag(row.difficulty)" size="small">{{ diffLabel(row.difficulty) }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="限制" width="160">
+          <el-table-column label="限制" width="150">
             <template #default="{ row }">{{ row.time_limit_ms }}ms / {{ row.memory_limit_mb }}MB</template>
           </el-table-column>
         </el-table>
-        <el-empty v-if="!loading && problems.length === 0" description="暂无题目" />
+        <el-empty v-if="!loading && problems.length === 0"
+                  :description="selectedTags.size ? '没有符合所选标签的题目' : '暂无题目'" />
       </div>
     </div>
 
@@ -90,18 +131,77 @@
 
 <script setup lang="ts">
 // 主页（题目列表）：刷题视角，只展示公开题目；左侧公告栏 + 题号跳转/随机一题
-import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+// 标签筛选：标签云来自 GET /problems/tags，点击标签带 ?tag= 重新拉列表（多标签交集）
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { Search, Check } from '@element-plus/icons-vue'
 import { api } from '../api/client'
 import { useUserStore } from '../stores/user'
 import md from '../utils/markdown'
 
 const router = useRouter()
+const route = useRoute()
 const userStore = useUserStore()
 const problems = ref<any[]>([])
 const loading = ref(false)
 const jumpId = ref('')
+
+// 标签云与已选标签（Set 保证多选去重）
+const tagCloud = ref<{ tag: string; count: number }[]>([])
+const selectedTags = reactive(new Set<string>())
+
+// 标签筛选（下拉式）：候选列表默认收起，点击搜索框展开、点外部收起；搜索框模糊过滤
+const tagSearch = ref('')
+const listVisible = ref(false)
+const tagFilterRef = ref<HTMLElement | null>(null)
+
+// 点击区域外收起下拉列表
+function onDocClick(e: MouseEvent) {
+  if (tagFilterRef.value && !tagFilterRef.value.contains(e.target as Node)) {
+    listVisible.value = false
+  }
+}
+
+onMounted(() => document.addEventListener('click', onDocClick))
+onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
+
+// 点击标签行：切换选中状态并重新加载列表（多标签 = 交集）
+async function toggleTag(tag: string) {
+  if (selectedTags.has(tag)) selectedTags.delete(tag)
+  else selectedTags.add(tag)
+  await loadProblems()
+}
+
+// 搜索框模糊过滤标签（大小写不敏感），已选项始终保留在结果里
+const visibleTags = computed(() => {
+  const kw = tagSearch.value.trim().toLowerCase()
+  if (!kw) return tagCloud.value
+  return tagCloud.value.filter((t) => t.tag.toLowerCase().includes(kw)
+    || selectedTags.has(t.tag))
+})
+
+function clearTags() {
+  selectedTags.clear()
+  loadProblems()
+}
+
+async function loadProblems() {
+  loading.value = true
+  try {
+    const params: Record<string, any> = {}
+    if (selectedTags.size) params.tag = [...selectedTags].join(',')
+    // 选中标签同步进 URL（浏览器前进/后退、分享链接都能还原筛选状态）
+    router.replace({ query: { ...route.query, tag: selectedTags.size ? [...selectedTags].join(',') : undefined } })
+    problems.value = await api.get('/problems', { params }) as any
+  } finally {
+    loading.value = false
+  }
+}
+
+// 题目详情页点标签跳回列表：读取 ?tag= 预选（仅首次加载解析，之后以页面内操作为准）
+const routeTag = computed(() => (typeof route.query.tag === 'string' ? route.query.tag : ''))
+routeTag.value.split(',').map((s) => s.trim()).filter(Boolean).forEach((t) => selectedTags.add(t))
 
 // 公告栏
 const announcements = ref<any[]>([])
@@ -143,18 +243,16 @@ const diffLabel = (d: number) => DIFF[d] ?? '未知'
 const diffTag = (d: number) => (['', 'info', 'success', 'warning', 'danger', 'danger'][d] ?? 'info') as any
 
 onMounted(async () => {
-  loading.value = true
-  loadingAnn.value = true
-  try {
-    problems.value = await api.get('/problems') as any
-  } finally {
-    loading.value = false
-  }
+  await loadProblems()
+  // 公告与标签云加载失败不阻塞列表展示
   try {
     announcements.value = await api.get('/misc/announcements') as any
-  } catch { /* 公告加载失败不阻塞列表 */ } finally {
+  } catch { /* ignore */ } finally {
     loadingAnn.value = false
   }
+  try {
+    tagCloud.value = (await api.get('/problems/tags') as any).items ?? []
+  } catch { /* ignore */ }
 })
 </script>
 
@@ -266,6 +364,49 @@ onMounted(async () => {
 }
 .title-link { color: var(--el-color-primary); text-decoration: none; }
 .title-link:hover { text-decoration: underline; }
+
+/* 标签筛选（搜索框 + 可展开的下拉候选列表） */
+.tag-filter { margin-bottom: 10px; }
+.picked-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.picked-label { font-size: 13px; color: var(--el-text-color-secondary); }
+.clear-btn { margin-left: 4px; }
+.tag-list {
+  margin-top: 8px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.tag-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  border-bottom: 1px dashed var(--el-border-color-lighter);
+}
+.tag-row:last-child { border-bottom: none; }
+.tag-row:hover { background: var(--el-fill-color-light); }
+.tag-row.picked { color: var(--el-color-primary); background: var(--el-color-primary-light-9); }
+.tag-name { word-break: break-all; }
+.tag-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.tag-count { font-size: 12px; color: var(--el-text-color-placeholder); }
+.check { color: var(--el-color-primary); }
+.empty { padding: 16px 0; text-align: center; }
+.no-tag { color: var(--el-text-color-placeholder); font-size: 13px; }
+.row-tag { cursor: pointer; margin-right: 4px; }
 
 /* 公告详情弹窗 */
 .ann-meta {

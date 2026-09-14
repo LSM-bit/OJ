@@ -130,6 +130,17 @@ class Testcase(Base):
     __table_args__ = (Index("uq_testcase_problem_idx", "problem_id", "idx", unique=True),)
 
 
+class Tag(Base):
+    """标签实例表：题目标签统一从本表选择（name 唯一），problems.tags 仍存名称字符串数组
+    建表与存量导入见 alembic 迁移 e6f7a8b9c0d1_tag_table.py
+    """
+    __tablename__ = "tags"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, default=snowflake_pk)
+    name: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Submission(Base):
     __tablename__ = "submissions"
 

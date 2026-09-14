@@ -36,7 +36,15 @@
               </el-select>
             </el-form-item>
             <el-form-item label="标签">
-              <el-input v-model="tagsText" placeholder="用逗号分隔，如：模拟,数学" />
+              <div class="tags-field">
+                <el-tag v-for="t in tags" :key="t" size="small" closable class="picked-tag"
+                        @close="tags = tags.filter((x) => x !== t)">
+                  {{ t }}
+                </el-tag>
+                <el-button size="small" @click="tagPickerRef?.open()">
+                  <el-icon style="margin-right:4px"><Plus /></el-icon>选择标签
+                </el-button>
+              </div>
             </el-form-item>
             <el-form-item label="时限">
               <el-input-number v-model="form.time_limit_ms" :min="100" :max="30000" :step="100" />
@@ -272,6 +280,9 @@
         <el-button type="primary" :loading="addingCase" @click="addCase">添加</el-button>
       </template>
     </el-dialog>
+
+    <!-- 标签选择弹窗：搜索选择已有标签实例 / 搜不到时创建（v-model 绑定已选标签名数组） -->
+    <TagPicker ref="tagPickerRef" v-model="tags" />
   </div>
 </template>
 
@@ -281,7 +292,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import md from '../utils/markdown'
 import { api } from '../api/client'
+import { Plus } from '@element-plus/icons-vue'
 import CodeWorkbench from '../components/CodeWorkbench.vue'
+import TagPicker from '../components/TagPicker.vue'
 
 const DIFF = ['', '入门', '简单', '中等', '较难', '困难']
 const diffLabel = (d: number) => DIFF[d] ?? '未知'
@@ -302,7 +315,9 @@ const form = ref({
   time_limit_ms: 2000, memory_limit_mb: 256,
   is_public: false, owner_type: 'user', team_id: null as number | null,
 })
-const tagsText = ref('')
+// 标签：弹窗从 tags 表实例中选择/新建（不再手填逗号分隔文本）
+const tags = ref<string[]>([])
+const tagPickerRef = ref<InstanceType<typeof TagPicker> | null>(null)
 const descTab = ref('edit')
 const saving = ref(false)
 const myTeams = ref<any[]>([])
@@ -356,7 +371,7 @@ onMounted(async () => {
       form.value.time_limit_ms = p.time_limit_ms
       form.value.memory_limit_mb = p.memory_limit_mb
       form.value.is_public = p.is_public
-      tagsText.value = (p.tags ?? []).join(',')
+      tags.value = p.tags ?? []
       await loadCases()
     } catch {
       ElMessage.error('题目不存在或无权查看')
@@ -372,17 +387,16 @@ async function saveStep1() {
     return
   }
   saving.value = true
-  const tags = tagsText.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean)
   try {
     if (isEdit.value) {
-      await api.put(`/problems/${pid.value}`, { ...form.value, tags })
+      await api.put(`/problems/${pid.value}`, { ...form.value, tags: tags.value })
       ElMessage.success('题面已保存')
     } else {
       if (form.value.owner_type === 'team' && !form.value.team_id) {
         ElMessage.warning('请选择团队')
         return
       }
-      const p = await api.post('/problems', { ...form.value, tags }) as any
+      const p = await api.post('/problems', { ...form.value, tags: tags.value }) as any
       ElMessage.success('创建成功，继续上传测试数据')
       router.replace(`/problems/${p.id}/edit`)
       step.value = 1
@@ -497,7 +511,9 @@ async function publish(isPublic: boolean) {
   margin-bottom: 10px;
 }
 .steps { margin-bottom: 18px; }
-.step-body { flex: 1; min-height: 0; }
+/* step-body 内部滚动：内容（用例表等）超高时在自己的区域里滚，
+   不会溢出盒子遮挡下方 foot-bar 保存按钮 */
+.step-body { flex: 1; min-height: 0; overflow-y: auto; }
 
 .form-grid {
   display: flex;
@@ -506,6 +522,14 @@ async function publish(isPublic: boolean) {
   min-height: 420px;
 }
 .form-col { flex: 1; min-width: 320px; }
+/* 标签字段：已选标签 + 选择按钮 */
+.tags-field {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.picked-tag { margin-right: 2px; }
 .desc-col {
   flex: 1.2;
   min-width: 380px;
@@ -631,6 +655,7 @@ async function publish(isPublic: boolean) {
 }
 
 .foot-bar {
+  flex-shrink: 0;
   margin-top: 14px;
   display: flex;
   justify-content: flex-end;

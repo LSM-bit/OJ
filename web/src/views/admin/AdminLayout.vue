@@ -1,6 +1,6 @@
 <!--
   AdminLayout.vue - 管理后台框架
-  左侧菜单（Dashboard/用户/题目/比赛/题单/团队/提交/判题节点）+ 右侧内容区
+  左侧菜单（Dashboard/用户/题目/标签/比赛/题单/团队/提交/判题节点）+ 右侧内容区
   入口控制：仅作为体验层，真正校验在后端 /admin/* 组级 require_admin
 -->
 <template>
@@ -16,6 +16,9 @@
         </el-menu-item>
         <el-menu-item index="/admin/problems">
           <span>题目管理</span>
+        </el-menu-item>
+        <el-menu-item index="/admin/tags">
+          <span>标签管理</span>
         </el-menu-item>
         <el-menu-item index="/admin/contests">
           <span>比赛管理</span>

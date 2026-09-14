@@ -21,6 +21,7 @@ from app.models import (
     Problem,
     Submission,
     SubmissionStatus,
+    Tag,
     Team,
     Testcase,
     User,
@@ -185,6 +186,118 @@ async def update_problem(
         p.is_public = body.is_public
     await db.commit()
     return {"ok": True, "is_public": p.is_public}
+
+
+# ---------- 标签管理 ----------
+
+async def _tag_usage_counts(db: AsyncSession) -> dict[str, int]:
+    """统计每个标签名被多少道题目使用（含私有题，后台视角看全量）"""
+    rows = await db.scalars(select(Problem.tags))
+    counter: dict[str, int] = {}
+    for tags in rows:
+        for t in set(tags or []):
+            if isinstance(t, str) and t:
+                counter[t] = counter.get(t, 0) + 1
+    return counter
+
+
+async def _replace_tag_name(db: AsyncSession, old: str, new: str | None) -> int:
+    """把所有题目 tags 数组里的 old 名替换为 new（new=None 表示移除该名），返回涉及题数"""
+    rows = await db.scalars(select(Problem).where(Problem.tags.isnot(None)))
+    touched = 0
+    for p in rows:
+        tags = list(p.tags or [])
+        if old not in tags:
+            continue
+        if new is None:
+            tags = [t for t in tags if t != old]
+        else:
+            tags = [new if t == old else t for t in tags]
+            # 重命名后同题内可能撞名，去重保持数组语义
+            tags = list(dict.fromkeys(tags))
+        p.tags = tags
+        touched += 1
+    return touched
+
+
+@router.get("/tags")
+async def list_tags(
+    q: str = "",
+    db: AsyncSession = Depends(get_db),
+):
+    """全量标签实例列表（含未被题目引用的孤儿标签），带使用题数"""
+    stmt = select(Tag)
+    if q:
+        stmt = stmt.where(Tag.name.ilike(f"%{q}%"))
+    rows = await db.scalars(stmt.order_by(Tag.name))
+    counts = await _tag_usage_counts(db)
+    items = [{
+        "id": t.id, "name": t.name,
+        "problem_count": counts.get(t.name, 0),
+        "created_at": t.created_at.isoformat() if t.created_at else "",
+    } for t in rows]
+    return {"items": items}
+
+
+class TagRename(BaseModel):
+    name: str = Field(min_length=1, max_length=32)
+
+
+@router.post("/tags", status_code=201)
+async def create_tag_admin(
+    body: TagRename,
+    db: AsyncSession = Depends(get_db),
+):
+    """后台新建标签实例（重名 400，与前台出题弹窗的幂等创建不同：管理端应显式感知冲突）"""
+    name = body.name.strip()
+    dup = await db.scalar(select(Tag).where(Tag.name == name))
+    if dup is not None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"标签「{name}」已存在")
+    tag = Tag(name=name)
+    db.add(tag)
+    await db.commit()
+    await db.refresh(tag)
+    return {"id": tag.id, "name": tag.name,
+            "problem_count": 0,
+            "created_at": tag.created_at.isoformat() if tag.created_at else ""}
+
+
+@router.put("/tags/{tag_id}")
+async def rename_tag(
+    tag_id: int,
+    body: TagRename,
+    db: AsyncSession = Depends(get_db),
+):
+    """重命名标签：同步替换所有题目 tags 数组中的旧名（题面引用随动）"""
+    name = body.name.strip()
+    tag = await db.get(Tag, tag_id)
+    if tag is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "标签不存在")
+    if name == tag.name:
+        return {"ok": True, "name": tag.name, "touched": 0}
+    dup = await db.scalar(select(Tag).where(Tag.name == name))
+    if dup is not None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"标签「{name}」已存在")
+    old = tag.name
+    tag.name = name
+    touched = await _replace_tag_name(db, old, name)
+    await db.commit()
+    return {"ok": True, "name": name, "touched": touched}
+
+
+@router.delete("/tags/{tag_id}")
+async def delete_tag(
+    tag_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """删除标签实例：同时从所有题目 tags 数组移除该名（题目本身不受影响）"""
+    tag = await db.get(Tag, tag_id)
+    if tag is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "标签不存在")
+    touched = await _replace_tag_name(db, tag.name, None)
+    await db.delete(tag)
+    await db.commit()
+    return {"ok": True, "touched": touched}
 
 
 # ---------- 比赛管理 ----------
