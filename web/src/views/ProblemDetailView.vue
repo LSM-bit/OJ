@@ -1,13 +1,14 @@
 <!--
   ProblemDetailView.vue - 题目详情页（刷题主入口，参考牛客 OJ 左右分栏布局）
-  左侧：题面（Markdown + KaTeX + 样例），可折叠
+  左侧：题面（Markdown + KaTeX + 样例）/「我的提交」两个 Tab，可折叠；
+        我的提交 = 本人本题的提交记录，行点进 /submissions/:id 详情看代码与测试点
   右侧：引用统一编辑器工作台 CodeWorkbench（语言/编辑器/自测/提交/结果）
 -->
 <template>
   <div v-loading="loading" class="problem-page">
     <template v-if="problem">
       <div class="split">
-        <!-- 左：题面 -->
+        <!-- 左：题面 / 我的提交 -->
         <div class="pane pane-left" :class="{ collapsed: descCollapsed }">
           <div class="pane-head">
             <span class="pane-title" @click="descCollapsed = !descCollapsed">
@@ -31,8 +32,16 @@
             </span>
           </div>
           <div v-show="!descCollapsed" class="pane-body">
-            <p class="limits">时间限制 {{ problem.time_limit_ms }}ms ｜ 内存限制 {{ problem.memory_limit_mb }}MB</p>
-            <div class="markdown" v-html="renderedDescription"></div>
+            <!-- 题面 / 我的提交 切换（做题时直接回看本人本题提交代码；仅登录可见） -->
+            <el-radio-group v-if="userStore.isLoggedIn" v-model="leftTab" size="small"
+                            class="left-tabs" @change="onLeftTab">
+              <el-radio-button :value="'desc'">题面</el-radio-button>
+              <el-radio-button :value="'mysub'">我的提交</el-radio-button>
+            </el-radio-group>
+
+            <div v-show="leftTab === 'desc'">
+              <p class="limits">时间限制 {{ problem.time_limit_ms }}ms ｜ 内存限制 {{ problem.memory_limit_mb }}MB</p>
+              <div class="markdown" v-html="renderedDescription"></div>
 
             <!-- 样例（后端 is_sample=true 的用例，隐藏用例不下发） -->
             <template v-if="problem.samples?.length">
@@ -53,6 +62,40 @@
                 </div>
               </div>
             </template>
+            </div>
+
+            <!-- 我的提交：本人本题的提交记录，点行进详情页看代码与测试点 -->
+            <div v-show="leftTab === 'mysub'" class="my-sub">
+              <div class="my-sub-head">
+                <span>我的提交（最多 50 条）</span>
+                <el-button link type="primary" size="small"
+                           @click="$router.push(`/submissions?problem=${problem.id}`)">
+                  到提交记录页查看
+                </el-button>
+              </div>
+              <el-table :data="mySubs" v-loading="subsLoading" size="small" class="click-table"
+                        @row-click="(row: any) => $router.push(`/submissions/${row.id}`)">
+                <el-table-column label="ID" width="100">
+                  <template #default="{ row }">
+                    <span class="mono-id" :title="row.id">{{ shortId(row.id) }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="language" label="语言" width="90" />
+                <el-table-column label="状态" width="90">
+                  <template #default="{ row }">
+                    <el-tag size="small" :type="statusTag(row.status)">{{ row.status_label }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="score" label="分" width="50" />
+                <el-table-column label="用时/内存" min-width="110">
+                  <template #default="{ row }">{{ row.time_ms }}ms · {{ (row.memory_kb / 1024).toFixed(1) }}MB</template>
+                </el-table-column>
+                <el-table-column label="时间" width="150">
+                  <template #default="{ row }">{{ fmtTime(row.submitted_at) }}</template>
+                </el-table-column>
+              </el-table>
+              <el-empty v-if="!subsLoading && !mySubs.length" description="本题还没有提交过" :image-size="60" />
+            </div>
           </div>
         </div>
 
@@ -74,15 +117,48 @@ import { ElMessage } from 'element-plus'
 import { CaretLeft, CaretRight, CopyDocument } from '@element-plus/icons-vue'
 import md from '../utils/markdown'
 import { api } from '../api/client'
+import { shortId } from '../utils/format'
+import { useUserStore } from '../stores/user'
 import CodeWorkbench from '../components/CodeWorkbench.vue'
 
 const route = useRoute()
+const userStore = useUserStore()
 const problem = ref<any>(null)
 const loading = ref(true)
 const descCollapsed = ref(false)
 const language = ref('python3.12')
 const code = ref('')
 const lastResult = ref<any>(null)
+
+// 左侧「题面 / 我的提交」切换；我的提交 = 本人对本题的提交记录
+const leftTab = ref<'desc' | 'mysub'>('desc')
+const mySubs = ref<any[]>([])
+const subsLoading = ref(false)
+const subsLoaded = ref(false)
+
+const statusTag = (s: string) =>
+  ({ ac: 'success', wa: 'danger', tle: 'warning', mle: 'warning',
+     re: 'danger', ce: 'info', se: 'danger', waiting: 'info', judging: 'info' }[s] ?? 'info') as any
+
+const fmtTime = (s: string) => (s ? s.replace('T', ' ').slice(0, 16) : '')
+
+async function loadMySubs() {
+  if (!userStore.isLoggedIn || !problem.value) return
+  subsLoading.value = true
+  try {
+    mySubs.value = await api.get('/submissions', {
+      params: { problem_id: problem.value.id },
+    }) as any
+    subsLoaded.value = true
+  } catch { /* 未登录等场景忽略 */ } finally {
+    subsLoading.value = false
+  }
+}
+
+function onLeftTab(v: any) {
+  // 首次切到「我的提交」才拉取；提交完成后再次切回时刷新
+  if (v === 'mysub' && !subsLoaded.value) loadMySubs()
+}
 
 const DIFF = ['', '入门', '简单', '中等', '较难', '困难']
 const diffLabel = (d: number) => DIFF[d] ?? '未知'
@@ -120,6 +196,8 @@ async function submit() {
       language: language.value,
       code: code.value,
     }) as any
+    // 新提交后刷新「我的提交」列表（已加载过的话）
+    if (subsLoaded.value) loadMySubs()
   } catch (e: any) {
     ElMessage.error(e.response?.data?.detail ?? '提交失败')
   }
@@ -186,6 +264,22 @@ async function submit() {
 }
 .limits { color: var(--el-text-color-secondary); font-size: 13px; margin-top: 0; }
 
+/* 左侧「题面 / 我的提交」切换 */
+.left-tabs { margin-bottom: 12px; }
+.my-sub-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+.click-table :deep(tbody tr) { cursor: pointer; }
+.mono-id {
+  font-family: 'JetBrains Mono', Consolas, Menlo, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+}
 /* 题目标签：可点击跳列表筛选 */
 .problem-tag { cursor: pointer; margin-left: 6px; }
 

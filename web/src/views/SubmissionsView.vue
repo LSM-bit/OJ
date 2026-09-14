@@ -1,13 +1,15 @@
 <!--
   SubmissionsView.vue - 我的提交记录列表
   顶栏「提交记录」入口；行点击进入 /submissions/:id 详情页
+  按题目筛选：下拉可输入按题名/题号模糊搜索；候选 = 公开题 + 我管理的题（含草稿，
+  保证对私有题的提交也能筛到、题目列能显示标题而不是纯 ID）
 -->
 <template>
   <div class="page">
     <div class="page-head">
       <h2>我的提交记录</h2>
-      <el-select v-model="problemId" placeholder="按题目筛选" clearable filterable
-                 style="width: 240px" @change="reload">
+      <el-select v-model="problemId" placeholder="搜索题名/题号筛选" clearable filterable
+                 style="width: 260px" @change="reload">
         <el-option v-for="p in problems" :key="p.id"
                    :label="`${p.display_id}. ${p.title}`" :value="p.id" />
       </el-select>
@@ -46,12 +48,17 @@
 
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { api } from '../api/client'
 import { shortId } from '../utils/format'
+import { useUserStore } from '../stores/user'
 
+const route = useRoute()
+const userStore = useUserStore()
 const items = ref<any[]>([])
 const problems = ref<any[]>([])
-const problemId = ref<number | null>(null)
+// 雪花 ID 经 json-bigint 前端统一为 string，筛选值与选项 value 同型才能正确预选
+const problemId = ref<string | null>(null)
 const loading = ref(false)
 
 const statusTag = (s: string) =>
@@ -60,8 +67,8 @@ const statusTag = (s: string) =>
 
 const fmtTime = (s: string) => (s ? s.replace('T', ' ').slice(0, 19) : '')
 
-const problemTitle = (pid: number) => {
-  const p = problems.value.find((x) => x.id === pid)
+const problemTitle = (pid: number | string) => {
+  const p = problems.value.find((x) => String(x.id) === String(pid))
   return p ? `${p.display_id}. ${p.title}` : `#${pid}`
 }
 
@@ -80,11 +87,28 @@ function reload() {
   load()
 }
 
-onMounted(async () => {
-  load()
+async function loadProblems() {
+  // 候选 = 公开题 + 我管理的题（含草稿）：对草稿/私有题的提交也要能筛到、能显示标题
   try {
-    problems.value = await api.get('/problems') as any
-  } catch { /* 忽略 */ }
+    const [pub, mine] = await Promise.all([
+      api.get('/problems') as Promise<any[]>,
+      userStore.isLoggedIn ? (api.get('/problems', { params: { mine: 1 } }) as Promise<any[]>)
+                           : Promise.resolve([] as any[]),
+    ])
+    const seen = new Set<string>()
+    problems.value = [...pub, ...mine].filter((p) => {
+      if (seen.has(String(p.id))) return false
+      seen.add(String(p.id))
+      return true
+    })
+  } catch { /* 忽略：候选加载失败不阻塞提交列表 */ }
+}
+
+onMounted(async () => {
+  // 支持从出题中心等页面带 ?problem=<id> 跳入，直接预选本题的提交
+  if (route.query.problem) problemId.value = String(route.query.problem)
+  load()
+  await loadProblems()
   // 列表轮询刷新（等待判题的提交状态会变化）
   timer = window.setInterval(load, 5000)
 })
