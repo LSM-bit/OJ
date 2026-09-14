@@ -31,8 +31,9 @@
               <el-input v-model="form.title" maxlength="128" placeholder="题目名称" />
             </el-form-item>
             <el-form-item label="难度">
+              <!-- 注意：v-for 的 i 从 0 开始，而后端难度枚举为 1入门~5困难，要用 i+1 作 value -->
               <el-select v-model="form.difficulty" style="width:140px">
-                <el-option v-for="(d, i) in DIFF.slice(1)" :key="i" :label="d" :value="i" />
+                <el-option v-for="(d, i) in DIFF.slice(1)" :key="i" :label="d" :value="i + 1" />
               </el-select>
             </el-form-item>
             <el-form-item label="标签">
@@ -180,16 +181,18 @@
           </div>
         </div>
 
-        <!-- 右：标程编辑器（引用统一编辑器工作台，验题页自定义头/尾） -->
+        <!-- 右：标程编辑器（引用统一编辑器工作台，与其他做题页同一组件/模板/重置） -->
         <div class="pane pane-right">
-          <CodeWorkbench v-model:code="solution.code" v-model:language="solution.language"
-                         :problem-id="pid || undefined" :show-submit="false" :show-reset="false">
+          <CodeWorkbench ref="solWbRef" v-model:code="solution.code" v-model:language="solution.language"
+                         :problem-id="pid || undefined" :show-submit="false">
             <template #head-after-lang>
               <el-tag v-if="casesInfo.verified_at" type="success" size="small" effect="light">
                 已通过验证 {{ casesInfo.verified_at.slice(0, 16).replace('T', ' ') }}
               </el-tag>
             </template>
             <template #head-right>
+              <!-- 与做题页一致：重置为当前语言模板；验题页不自动切模板（防覆盖已存标程），由按钮手动触发 -->
+              <el-button size="small" @click="solWbRef?.reset()">重置</el-button>
               <el-button type="primary" size="small" :loading="verifying"
                          :disabled="!casesInfo.has_data || !solution.code.trim()" @click="verify">
                 运行测试（{{ (casesInfo.samples?.length ?? 0) + (casesInfo.cases?.length ?? 0) }} 个用例）
@@ -338,6 +341,8 @@ const newCase = ref({ input: '', output: '', is_sample: true })
 
 // 第 3 步：标程验证
 const solution = ref({ language: 'python3.12', code: '' })
+// 验题工作台引用：head-right 插槽里的「重置」按钮调用组件透出的 reset()
+const solWbRef = ref<InstanceType<typeof CodeWorkbench> | null>(null)
 const verifying = ref(false)
 const verifyResult = ref<any>(null)
 const publishing = ref(false)

@@ -133,7 +133,8 @@ const selftestRef = ref<InstanceType<typeof SelfTestPanel> | null>(null)
 function setStdin(text: string) {
   selftestRef.value?.setStdin(text ?? '')
 }
-defineExpose({ setStdin })
+// reset：向父组件透出「重置为当前语言模板」，供自定义 head-right 插槽的页面（验题页）挂重置按钮
+defineExpose({ setStdin, reset: resetCode })
 </script>
 
 <style scoped>
