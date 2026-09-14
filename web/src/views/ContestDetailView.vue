@@ -314,7 +314,7 @@ async function loadSubs() {
   try {
     const params: Record<string, any> = { page: subsPage.value, page_size: subsPageSize }
     if (subsFilter.alias) params.problem_alias = subsFilter.alias
-    if (subs.can_view_all && subsFilter.username) params.username = subsFilter.username
+    if (subs.value.can_view_all && subsFilter.username) params.username = subsFilter.username
     subs.value = await api.get(`/contests/${route.params.id}/submissions`, { params }) as any
   } finally {
     subsLoading.value = false
