@@ -32,15 +32,19 @@ def _jsonb_sqlite(type_, compiler, **kw):
 
 @pytest.fixture()
 def data_dir(tmp_path: Path) -> Path:
-    """题目数据临时根目录，并让 settings 指向它"""
+    """题目数据临时根目录，并让 settings 指向它 + 强制 local 存储后端
+    （默认 backend 是 minio，测试不依赖外部 MinIO 服务）"""
     root = tmp_path / "problem_data"
     root.mkdir()
     from app.config import settings
 
-    original = settings.problem_data_dir
+    original_dir = settings.problem_data_dir
+    original_backend = settings.storage_backend
     settings.problem_data_dir = str(root)
+    settings.storage_backend = "local"
     yield root
-    settings.problem_data_dir = original
+    settings.problem_data_dir = original_dir
+    settings.storage_backend = original_backend
 
 
 @pytest_asyncio.fixture()

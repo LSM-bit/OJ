@@ -29,7 +29,13 @@ from app.judge_gateway.server import get_gateway
 from app.models import OwnerType, Problem, Submission, SubmissionStatus, Tag, Testcase, TeamMember, User, UserRole
 from app.services.access_deps import ProblemAccess
 from app.services.auth import CurrentUser, ProblemSetter, get_optional_user as get_optional_user_import
-from app.services.problem_data import data_dir, write_problem_data
+from app.services.problem_data import (
+    append_files,
+    read_manifest,
+    read_text_file,
+    write_manifest,
+    write_problem_data,
+)
 
 router = APIRouter(prefix="/problems", tags=["problems"])
 
@@ -190,15 +196,11 @@ async def get_problem(
     tcs = await db.scalars(
         select(Testcase).where(Testcase.problem_id == p.id, Testcase.is_sample == True)  # noqa: E712
         .order_by(Testcase.idx))
-    data_root = data_dir(str(p.id), p.config.get("data_version", "v1"))
+    version = p.config.get("data_version", "v1")
     samples = []
     for tc in tcs:
-        inp = out_text = ""
-        try:
-            inp = (data_root / tc.input_key).read_text(encoding="utf-8", errors="replace")[:4000]
-            out_text = (data_root / tc.output_key).read_text(encoding="utf-8", errors="replace")[:4000]
-        except OSError:
-            pass
+        inp = await read_text_file(str(p.id), version, tc.input_key, limit=4000) or ""
+        out_text = await read_text_file(str(p.id), version, tc.output_key, limit=4000) or ""
         samples.append({"idx": tc.idx, "input": inp, "output": out_text})
     return {**out.model_dump(), "samples": samples}
 
@@ -360,14 +362,10 @@ async def list_cases(
     tcs = await db.scalars(
         select(Testcase).where(Testcase.problem_id == p.id).order_by(Testcase.idx))
     samples, hidden = [], []
-    data_root = data_dir(str(p.id), p.config.get("data_version", "v1"))
+    version = p.config.get("data_version", "v1")
     for tc in tcs:
-        inp = out = ""
-        try:
-            inp = (data_root / tc.input_key).read_text(encoding="utf-8", errors="replace")[:2000]
-            out = (data_root / tc.output_key).read_text(encoding="utf-8", errors="replace")[:2000]
-        except OSError:
-            pass
+        inp = await read_text_file(str(p.id), version, tc.input_key, limit=2000) or ""
+        out = await read_text_file(str(p.id), version, tc.output_key, limit=2000) or ""
         item = {
             "idx": tc.idx, "case_id": tc.case_id, "score": tc.score,
             "is_sample": tc.is_sample,
@@ -402,21 +400,21 @@ async def add_sample_case(
     if not inp and not out:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "输入/输出不能同时为空")
     version = p.config.get("data_version", "v1")
-    root = data_dir(str(p.id), version)
     tcs = await db.scalars(
         select(Testcase).where(Testcase.problem_id == p.id).order_by(Testcase.idx))
     existing = list(tcs)
     idx = len(existing)
     case_id = f"tc{idx}"
-    (root / "cases").mkdir(parents=True, exist_ok=True)
-    (root / "cases" / f"{case_id}.in").write_text(inp, encoding="utf-8")
-    (root / "cases" / f"{case_id}.out").write_text(out, encoding="utf-8")
     # manifest 同步追加
-    mf_path = root / "manifest.json"
     manifest = {"cases": [{"id": tc.case_id, "score": tc.score, "sample": tc.is_sample}
                           for tc in existing]}
     manifest["cases"].append({"id": case_id, "score": body.get("score", 0), "sample": is_sample})
-    mf_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    # 新用例文件 + 重写后的 manifest 一并增量写入存储后端
+    await append_files(str(p.id), version, {
+        f"cases/{case_id}.in": inp.encode("utf-8"),
+        f"cases/{case_id}.out": out.encode("utf-8"),
+        "manifest.json": json.dumps(manifest, ensure_ascii=False).encode("utf-8"),
+    })
     db.add(Testcase(problem_id=p.id, idx=idx, case_id=case_id,
                     input_key=f"cases/{case_id}.in", output_key=f"cases/{case_id}.out",
                     score=body.get("score", 0), is_sample=is_sample))
@@ -441,14 +439,12 @@ async def delete_case(
     await db.flush()  # 先落删除，避免重排 UPDATE 撞 (problem_id, idx) 唯一约束
     # 重排 idx 并同步 manifest
     version = p.config.get("data_version", "v1")
-    root = data_dir(str(p.id), version)
     manifest = {"cases": []}
     for i, tc in enumerate(existing):
         tc.idx = i
         manifest["cases"].append({"id": tc.case_id, "score": tc.score})
-    mf_path = root / "manifest.json"
-    if mf_path.parent.exists():
-        mf_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    if await read_manifest(str(p.id), version) is not None:
+        await write_manifest(str(p.id), version, manifest)
     await db.commit()
     return {"ok": True, "count": len(existing)}
 
@@ -508,17 +504,13 @@ async def verify_solution(
 
     detail = []
     all_pass = True
-    data_root = data_dir(str(p.id), data_version)
     for i, c in enumerate(result.cases):
         passed = c.status == "accepted"
         all_pass = all_pass and passed
         exp_out = ""
         if i < len(tcs):
-            try:
-                exp_out = (data_root / tcs[i].output_key).read_text(
-                    encoding="utf-8", errors="replace")[:2000]
-            except OSError:
-                pass
+            exp_out = await read_text_file(
+                str(p.id), data_version, tcs[i].output_key, limit=2000) or ""
         detail.append({
             "idx": i, "case_id": tcs[i].case_id if i < len(tcs) else c.test_case_id,
             "status": c.status, "passed": passed,

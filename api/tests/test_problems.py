@@ -132,12 +132,13 @@ async def test_upload_data_and_manifest_sync(client, normal_user):
     assert r.status_code == 200, r.text
     assert r.json()["cases"] == 2
 
-    # 数据文件确实落盘
-    from app.services.problem_data import data_dir
-    from app.config import settings
-    root = data_dir(str(p["id"]), "v1")
-    assert (root / "manifest.json").is_file()
-    assert (root / "cases" / "tc0.in").is_file()
+    # 数据确实写入存储后端（conftest 已切 local 后端，落 tmp 目录）
+    from app.services.problem_data import read_file, read_manifest
+
+    manifest = await read_manifest(str(p["id"]), "v1")
+    assert manifest is not None and len(manifest["cases"]) == 2
+    assert await read_file(str(p["id"]), "v1", "cases/tc0.in") == b"1 2"
+    assert await read_file(str(p["id"]), "v1", "cases/tc0.out") == b"3"
 
 
 async def test_upload_data_missing_case_file(client, normal_user):

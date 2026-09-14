@@ -1,33 +1,22 @@
 """用户路由：注册 / 登录 / 我的信息 / 个人资料编辑 / 头像上传"""
 
-import uuid
-from pathlib import Path
-
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.database import get_db
 from app.models import User, UserRole
+from app.services import problem_data
 from app.services.auth import CurrentUser
 from app.services.security import create_access_token, hash_password, verify_password
 
 router = APIRouter(prefix="/users", tags=["users"])
 
-# 头像上传限制与存储目录（本地磁盘，生产可换对象存储）
+# 头像上传限制（文件本体存 MinIO oj-avatars 桶，读取走 /static/avatars 代理端点）
 AVATAR_MAX_BYTES = 2 * 1024 * 1024  # 2MB
 AVATAR_ALLOWED_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
                         "image/gif": ".gif"}
-
-
-def _avatar_upload_dir() -> Path:
-    """头像存储目录：{data_dir}/avatars（数据根目录下，随题目数据目录可配置）"""
-    data_root = Path(settings.problem_data_dir).parent
-    d = data_root / "avatars"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
 
 
 class RegisterRequest(BaseModel):
@@ -143,14 +132,12 @@ async def upload_avatar(
 
     # 固定文件名 per 用户（覆盖写），避免历史文件堆积
     filename = f"u{user.id}{ext}"
-    path = _avatar_upload_dir() / filename
-    path.write_bytes(data)
+    await problem_data.put_avatar(filename, data)
 
-    # 旧头像扩展名可能不同，清掉其它扩展名的同名文件
+    # 旧头像扩展名可能不同，清掉其它扩展名的同名对象
     for other_ext in AVATAR_ALLOWED_TYPES.values():
         if other_ext != ext:
-            old = _avatar_upload_dir() / f"u{user.id}{other_ext}"
-            old.unlink(missing_ok=True)
+            await problem_data.delete_avatar(f"u{user.id}{other_ext}")
 
     user.avatar = f"/static/avatars/{filename}"
     await db.commit()
@@ -163,9 +150,9 @@ async def delete_avatar(
     db: AsyncSession = Depends(get_db),
     user: User = CurrentUser,
 ):
-    """恢复默认头像：删除文件并清空字段"""
+    """恢复默认头像：删除对象并清空字段"""
     for ext in AVATAR_ALLOWED_TYPES.values():
-        (_avatar_upload_dir() / f"u{user.id}{ext}").unlink(missing_ok=True)
+        await problem_data.delete_avatar(f"u{user.id}{ext}")
     user.avatar = None
     await db.commit()
     await db.refresh(user)

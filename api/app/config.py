@@ -18,10 +18,19 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = "redis://localhost:6379/0"
 
+    # 对象存储（MinIO）：storage_backend 决定题目数据/头像的后端，minio | local
+    storage_backend: str = "minio"
+    minio_endpoint: str = "localhost:9000"
+    minio_access_key: str = "oju"  # MinIO 要求用户名 ≥3 字符，与 compose 中 MINIO_ROOT_USER 一致
+    minio_secret_key: str = "oj_password"
+    minio_secure: bool = False
+    minio_bucket_problems: str = "oj-problems"
+    minio_bucket_avatars: str = "oj-avatars"
+
     # 判题网关（gRPC，独立于 HTTP 端口）
     judge_grpc_port: int = 50051
     judge_gateway_tokens: list[str] = ["dev-judge-token"]
-    problem_data_dir: str = "./data/problems"  # 测试数据根目录（生产换对象存储）
+    problem_data_dir: str = "./data/problems"  # local 后端的测试数据根目录（pytest 用）
 
     # JWT
     jwt_secret: str = "dev-secret-change-me"

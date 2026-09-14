@@ -336,16 +336,14 @@ async def contest_submit(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
     p = await db.get(Problem, cp.problem_id)
 
-    # 测试点列表：优先 testcases 表（上传数据时已同步）；无记录时回退读本地 manifest
+    # 测试点列表：优先 testcases 表（上传数据时已同步）；无记录时回退读 manifest
     tcs = (await db.scalars(
         select(Testcase).where(Testcase.problem_id == p.id).order_by(Testcase.idx))).all()
-    if tcs:
-        case_list = [(tc.case_id, tc.score) for tc in tcs]
-    else:
-        from app.services.problem_data import data_dir
-        data_version = p.config.get("data_version", "v1")
-        manifest_path = data_dir(str(p.id), data_version) / "manifest.json"
-        manifest = json.loads(manifest_path.read_bytes())
+    case_list = [(tc.case_id, tc.score) for tc in tcs]
+    if not case_list:
+        from app.services.problem_data import read_manifest
+        manifest = await read_manifest(
+            str(p.id), p.config.get("data_version", "v1")) or {"cases": []}
         case_list = [(c["id"], c.get("score", 0)) for c in manifest["cases"]]
     if not case_list:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "题目暂无测试数据")
@@ -502,18 +500,15 @@ async def rejudge_contest_problem(
             status.HTTP_400_BAD_REQUEST,
             f"该题共 {len(subs)} 条提交，均未留存源码，无法重测")
 
-    # 测试点列表：优先 testcases 表（上传数据时已同步）；无记录时回退读本地 manifest
+    # 测试点列表：优先 testcases 表（上传数据时已同步）；无记录时回退读 manifest
     tcs = (await db.scalars(
         select(Testcase).where(Testcase.problem_id == p.id).order_by(Testcase.idx))).all()
     case_list = [(tc.case_id, tc.score) for tc in tcs]
     if not case_list:
-        from app.services.problem_data import data_dir
-        data_version = p.config.get("data_version", "v1")
-        manifest_path = data_dir(str(p.id), data_version) / "manifest.json"
-        if not manifest_path.exists():
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "题目暂无测试数据")
-        manifest = json.loads(manifest_path.read_bytes())
-        case_list = [(c["id"], c.get("score", 0)) for c in manifest["cases"]]
+        from app.services.problem_data import read_manifest
+        manifest = await read_manifest(
+            str(p.id), p.config.get("data_version", "v1"))
+        case_list = [(c["id"], c.get("score", 0)) for c in (manifest or {}).get("cases", [])]
     if not case_list:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "题目暂无测试数据")
 

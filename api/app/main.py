@@ -2,15 +2,15 @@
 
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import Response
 
 from app.config import settings
 from app.judge_gateway.server import get_gateway, start_grpc_server, stop_grpc_server
 from app.routers import admin, contests, misc, playlists, problems, submissions, teams, users
+from app.services import problem_data
 from app.utils.json_response import BigIdJSONResponse
 
 logging.basicConfig(level=logging.INFO)
@@ -40,10 +40,22 @@ app.include_router(playlists.router)
 app.include_router(misc.router)
 app.include_router(admin.router)
 
-# 用户头像静态服务：{data 根目录}/avatars → /static/avatars/*（登录后浏览器直接 GET，无鉴权）
-_static_avatars = Path(settings.problem_data_dir).parent / "avatars"
-_static_avatars.mkdir(parents=True, exist_ok=True)
-app.mount("/static/avatars", StaticFiles(directory=str(_static_avatars)), name="avatars")
+# 用户头像服务：MinIO 读取后经 API 代理下发（URL 保持 /static/avatars/*，前端零改动）
+_AVATAR_CONTENT_TYPES = {"jpg": "image/jpeg", "png": "image/png",
+                         "webp": "image/webp", "gif": "image/gif"}
+
+
+@app.get("/static/avatars/{filename}")
+async def avatar(filename: str) -> Response:
+    data = await problem_data.get_avatar(filename)
+    if data is None:
+        from fastapi import HTTPException, status
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "头像不存在")
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    media_type = _AVATAR_CONTENT_TYPES.get(ext, "application/octet-stream")
+    # 缓存一小时：头像文件名 per 用户固定（覆盖写），短缓存避免更新后浏览器还用旧图
+    return Response(content=data, media_type=media_type,
+                    headers={"Cache-Control": "public, max-age=3600"})
 
 app.add_middleware(
     CORSMiddleware,

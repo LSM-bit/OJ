@@ -4,7 +4,7 @@
 
 ## 技术栈
 
-- **api** — Python 3.12 + FastAPI + SQLAlchemy 2 (async) + Alembic + PostgreSQL + Redis
+- **api** — Python 3.12 + FastAPI + SQLAlchemy 2 (async) + Alembic + PostgreSQL + Redis + MinIO
 - **judge** — Python 判题编排 + go-judge 沙箱（QOJ/Hydro 同款）
 - **web** — Vue 3 + TypeScript + Vite + Pinia + Element Plus + markdown-it/KaTeX
 
@@ -25,7 +25,7 @@ Windows 下一键启动：双击根目录 [run.bat](run.bat)（或命令行执�
 手动启动：
 
 ```bash
-# 1. 基础设施（postgres + redis + go-judge 沙箱）
+# 1. 基础设施（postgres + redis + minio 对象存储 + 判题节点沙箱）
 cd deploy && docker compose up -d
 
 # 2. 后端 API
@@ -47,7 +47,17 @@ npm install && npm run dev   # http://localhost:5173
 
 - API: http://localhost:8000/health
 - go-judge 沙箱: http://localhost:5050/version
+- MinIO Console: http://localhost:9001（oju / oj_password）
 - 前端: http://localhost:5173
+
+## 对象存储（MinIO）
+
+题目测试数据与用户头像存 MinIO（`api/app/services/problem_data.py` 双后端抽象，`storage_backend=minio|local`）：
+
+- `oj-problems` 桶：`{problem_id}-{data_version}/manifest.json` + `cases/tc{N}.in/.out`
+- `oj-avatars` 桶：`u{user_id}.{ext}`，经 API 代理端点 `/static/avatars/{filename}` 读取
+- 判题节点经 gRPC 流式拉取数据并缓存到本地 `/cache`，无感网关后端介质
+- 存量本地数据迁移：`.venv/Scripts/python -m app.scripts.migrate_problem_data_to_minio`
 
 ## 开发阶段
 
