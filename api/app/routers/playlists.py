@@ -147,6 +147,19 @@ async def update_playlist(
     return _out(pl)
 
 
+@router.delete("/{playlist_id}")
+async def delete_playlist(
+    playlist_id: int,
+    pl: Playlist = Depends(PlaylistAccess("manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    """删除题单（仅管理者）。playlist_problems 关联行由 FK CASCADE 级联清除，
+    题目本身不受影响。不可恢复。"""
+    await db.delete(pl)
+    await db.commit()
+    return {"ok": True}
+
+
 @router.put("/{playlist_id}/problems", status_code=201)
 async def set_playlist_problems(
     playlist_id: int, body: dict,
@@ -176,6 +189,9 @@ async def set_playlist_problems(
         select(PlaylistProblem).where(PlaylistProblem.playlist_id == pl.id))
     for r in old:
         await db.delete(r)
+    # 先 flush 落库 DELETE：SQLAlchemy flush 时 INSERT 先于 DELETE 执行，
+    # 不提前 flush 会撞 uq_playlist_problem 唯一约束（重复保存同一批题目必现 500）
+    await db.flush()
     for i, pid in enumerate(problem_ids):
         db.add(PlaylistProblem(playlist_id=pl.id, problem_id=pid, idx=i))
     await db.commit()

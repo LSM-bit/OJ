@@ -104,6 +104,8 @@ class Problem(Base):
         Enum(OwnerType, name="owner_type"), default=OwnerType.USER)
     owner_id: Mapped[int] = mapped_column(BigInteger)  # 多态：user.id 或 team.id（由 owner_type 消歧）
     is_public: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 归档：不出现在题目列表（公开/管理视角均默认排除），详情仍可访问，不可再提交
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     testcases: Mapped[list["Testcase"]] = relationship(back_populates="problem")
@@ -230,6 +232,8 @@ class Team(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     max_members: Mapped[int] = mapped_column(Integer, default=50)
+    # 归档：团队转为只读（不出现在团队列表、成员不可加入，名下题目/题单/比赛照常存在）
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     members: Mapped[list["TeamMember"]] = relationship(

@@ -247,3 +247,57 @@ async def test_my_teams_list(client, normal_user, db_sessionmaker):
     names = {x["name"] for x in r.json()}
     assert "team-a" in names
     assert r.json()[0]["my_role"] == "owner"
+
+
+async def test_archive_team_flow(client, normal_user, db_sessionmaker):
+    """团队归档全链路：仅队长可归档；列表隐藏（archived=1 可见）；
+    不能生成邀请码/加入；详情仍可访问；恢复后照旧"""
+    t = await _create_team(client, normal_user, name="archive-team")
+    async with db_sessionmaker() as db:
+        m = await make_user(db, "arch_member")
+        stranger = await make_user(db, "arch_outsider")
+    r = await client.post(f"/teams/{t['id']}/invite-codes",
+                          headers=await auth_header(normal_user))
+    code = r.json()["code"]
+    await client.post("/teams/join", json={"code": code}, headers=await auth_header(m))
+
+    # 副队/成员不能归档（先升 m 为副队验证，再由队长归档）
+    r = await client.put(f"/teams/{t['id']}/archive", json={"archived": True},
+                         headers=await auth_header(m))
+    assert r.status_code == 403
+
+    r = await client.put(f"/teams/{t['id']}/archive", json={"archived": True},
+                         headers=await auth_header(normal_user))
+    assert r.status_code == 200, r.text
+    assert r.json()["archived"] is True
+
+    # 默认列表隐藏，archived=1 查看
+    r = await client.get("/teams", headers=await auth_header(normal_user))
+    assert "archive-team" not in {x["name"] for x in r.json()}
+    r = await client.get("/teams?archived=1", headers=await auth_header(normal_user))
+    assert "archive-team" in {x["name"] for x in r.json()}
+    assert r.json()[0]["archived"] is True
+
+    # 详情仍可访问（成员端带 archived 标记）
+    r = await client.get(f"/teams/{t['id']}", headers=await auth_header(m))
+    assert r.status_code == 200
+    assert r.json()["archived"] is True
+
+    # 归档后不能生成邀请码 / 不能加入
+    r = await client.post(f"/teams/{t['id']}/invite-codes",
+                          headers=await auth_header(normal_user))
+    assert r.status_code == 400
+    r = await client.post("/teams/join", json={"code": code},
+                          headers=await auth_header(stranger))
+    assert r.status_code == 400
+    assert "归档" in r.json()["detail"]
+
+    # 恢复后：列表回归、可继续生成邀请码
+    r = await client.put(f"/teams/{t['id']}/archive", json={"archived": False},
+                         headers=await auth_header(normal_user))
+    assert r.json()["archived"] is False
+    r = await client.get("/teams", headers=await auth_header(normal_user))
+    assert "archive-team" in {x["name"] for x in r.json()}
+    r = await client.post(f"/teams/{t['id']}/invite-codes",
+                          headers=await auth_header(normal_user))
+    assert r.status_code == 200

@@ -156,3 +156,35 @@ async def test_update_playlist_fields(client, normal_user):
     assert r.status_code == 200, r.text
     assert r.json()["title"] == "新名"
     assert r.json()["is_public"] is True
+
+
+async def test_delete_playlist(client, normal_user, db_sessionmaker, gateway):
+    """删除题单：仅管理者可删；删后列表/详情均不可见；题目本身不受影响"""
+    from app.models import Problem
+
+    p = await setup_public_problem(client, normal_user, title="题单里的题")
+    pl = await _create_playlist(client, normal_user, title="待删除题单")
+    r = await client.put(f"/playlists/{pl['id']}/problems",
+                         json={"problem_ids": [p["id"]]},
+                         headers=await auth_header(normal_user))
+    assert r.status_code == 201, r.text
+
+    # 陌生人删除 → 404 防枚举
+    async with db_sessionmaker() as db:
+        stranger = await make_user(db, "pl_del_stranger")
+    r = await client.delete(f"/playlists/{pl['id']}", headers=await auth_header(stranger))
+    assert r.status_code == 404
+
+    # owner 删除
+    r = await client.delete(f"/playlists/{pl['id']}", headers=await auth_header(normal_user))
+    assert r.status_code == 200, r.text
+
+    # 列表与详情都不在了
+    r = await client.get("/playlists", headers=await auth_header(normal_user))
+    assert "待删除题单" not in {x["title"] for x in r.json()}
+    r = await client.get(f"/playlists/{pl['id']}", headers=await auth_header(normal_user))
+    assert r.status_code == 404
+
+    # 关联的题目本身不受影响
+    async with db_sessionmaker() as db:
+        assert await db.get(Problem, int(p["id"])) is not None

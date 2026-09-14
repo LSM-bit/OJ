@@ -282,3 +282,71 @@ async def test_tag_cloud_counts_only_public(client, normal_user, gateway):
     assert counter == {"模拟": 1, "数学": 1}
     # 计数相同按 tag 字典序
     assert [x["tag"] for x in items] == ["数学", "模拟"]
+
+
+# ---------------- 归档 ----------------
+
+async def test_archive_problem_flow(client, normal_user, db_sessionmaker, gateway):
+    """题目归档全链路：列表隐藏 → 刷题/管理视角都看不到 → archived=1 可见 →
+    详情可访问但不可提交 → 恢复后一切照旧"""
+    from tests.conftest import make_user
+
+    p = await _create_problem(client, normal_user, title="归档题")
+
+    # 归档需要管理权：陌生人不允许（私有草稿题按不存在处理，防枚举）
+    async with db_sessionmaker() as db:
+        stranger = await make_user(db, "arch_stranger")
+    r = await client.put(f"/problems/{p['id']}/archive", json={"archived": True},
+                         headers=await auth_header(stranger))
+    assert r.status_code == 404
+
+    # owner 归档
+    r = await client.put(f"/problems/{p['id']}/archive", json={"archived": True},
+                         headers=await auth_header(normal_user))
+    assert r.status_code == 200, r.text
+    assert r.json()["archived"] is True
+
+    # 刷题视角（即使 is_public 也不显示）、管理视角默认都排除归档题
+    r = await client.get("/problems", headers=await auth_header(normal_user))
+    assert p["id"] not in {int(x["id"]) for x in r.json()}
+    r = await client.get("/problems?mine=1", headers=await auth_header(normal_user))
+    assert p["id"] not in {int(x["id"]) for x in r.json()}
+
+    # mine=1&archived=1：只看归档题
+    r = await client.get("/problems?mine=1&archived=1", headers=await auth_header(normal_user))
+    assert int(p["id"]) in {int(x["id"]) for x in r.json()}
+
+    # 详情仍可访问（已有引用不失效）
+    r = await client.get(f"/problems/{p['id']}", headers=await auth_header(normal_user))
+    assert r.status_code == 200
+
+    # 归档题不可提交
+    r = await client.post("/submissions", json={
+        "problem_id": p["id"], "language": "python3.12", "code": "print(1)"},
+        headers=await auth_header(normal_user))
+    assert r.status_code == 400
+    assert "归档" in r.json()["detail"]
+
+    # 恢复后：列表回归、可提交
+    r = await client.put(f"/problems/{p['id']}/archive", json={"archived": False},
+                         headers=await auth_header(normal_user))
+    assert r.json()["archived"] is False
+    r = await client.get("/problems?mine=1", headers=await auth_header(normal_user))
+    assert int(p["id"]) in {int(x["id"]) for x in r.json()}
+
+
+async def test_archive_hides_from_tag_cloud(client, normal_user, gateway):
+    """标签云只统计未归档的公开题"""
+    # 两道公开题打上同一归档测试标签（标签名唯一，不受其他测试干扰）
+    p1 = await _make_public_problem(client, normal_user, title="标签归档题", tags=["归档测试标"])
+    p2 = await _make_public_problem(client, normal_user, title="标签正常题", tags=["归档测试标"])
+    r = await client.get("/problems/tags")
+    counter = {x["tag"]: x["count"] for x in r.json()["items"]}
+    assert counter["归档测试标"] == 2
+
+    # 归档其一：计数减一
+    await client.put(f"/problems/{p1['id']}/archive", json={"archived": True},
+                     headers=await auth_header(normal_user))
+    r = await client.get("/problems/tags")
+    counter = {x["tag"]: x["count"] for x in r.json()["items"]}
+    assert counter["归档测试标"] == 1

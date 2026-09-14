@@ -37,6 +37,7 @@ def _team_out(t: Team, member_count: int | None = None) -> dict:
     out = {
         "id": t.id, "name": t.name, "description": t.description,
         "owner_id": t.owner_id, "max_members": t.max_members,
+        "archived": t.archived,
         "created_at": t.created_at.isoformat(),
     }
     if member_count is not None:
@@ -62,10 +63,15 @@ async def create_team(
 
 
 @router.get("")
-async def list_my_teams(db: AsyncSession = Depends(get_db), user: User = CurrentUser):
-    """我加入的团队列表"""
+async def list_my_teams(
+    db: AsyncSession = Depends(get_db), user: User = CurrentUser,
+    archived: int = 0,  # 1 = 仅看已归档团队；默认只看未归档
+):
+    """我加入的团队列表（归档团队默认隐藏，archived=1 查看）"""
     rows = await db.scalars(
-        select(TeamMember).where(TeamMember.user_id == user.id)
+        select(TeamMember).where(
+            TeamMember.user_id == user.id,
+            TeamMember.team_id.in_(select(Team.id).where(Team.archived == bool(archived))))
         .options(joinedload(TeamMember.team)))
     return [
         {**_team_out(m.team), "my_role": m.role.value}
@@ -127,6 +133,25 @@ async def delete_team(
     return {"ok": True}
 
 
+@router.put("/{team_id}/archive")
+async def archive_team(
+    team_id: int, body: dict = Body(...),
+    db: AsyncSession = Depends(get_db), user: User = CurrentUser,
+):
+    """归档/取消归档（仅队长/ADMIN）。body {"archived": true|false}
+    归档后团队转为只读：不进团队列表、不可生成邀请码/加入；
+    名下题目、题单、比赛照常存在（详情可访问），可随时恢复。"""
+    t = await db.get(Team, team_id)
+    if t is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "团队不存在")
+    role = await get_team_role(db, team_id, user.id)
+    if role != TeamRole.OWNER and user.role.value != "admin":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "仅队长可归档团队")
+    t.archived = bool((body or {}).get("archived", True))
+    await db.commit()
+    return {"ok": True, "archived": t.archived}
+
+
 @router.post("/{team_id}/invite-codes")
 async def create_invite_code(
     team_id: int, db: AsyncSession = Depends(get_db), user: User = CurrentUser,
@@ -135,6 +160,8 @@ async def create_invite_code(
     t = await db.get(Team, team_id)
     if t is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "团队不存在")
+    if t.archived:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "团队已归档，不能生成邀请码")
     await require_team_manage(db, team_id, user)
     code = secrets.token_urlsafe(8)
     _INVITE_CODES[code] = team_id
@@ -172,6 +199,8 @@ async def _do_join(db: AsyncSession, team_id: int, user: User) -> dict:
     t = await db.get(Team, team_id)
     if t is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "团队不存在")
+    if t.archived:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "团队已归档，不能加入")
     count = await db.scalar(
         select(func.count())
         .select_from(TeamMember).where(TeamMember.team_id == team_id))

@@ -1,18 +1,23 @@
 <!--
   TeamsView.vue - 团队页
-  我的团队列表 + 创建团队 + 成员管理（邀请码/角色/移除）
+  我的团队列表（含已归档筛选）+ 创建团队 + 成员管理（邀请码/角色/移除）+ 归档/解散
 -->
 <template>
   <div class="page">
     <div class="page-head">
       <h2>我的团队</h2>
       <div class="head-ops">
+        <el-radio-group v-model="archived" size="small" @change="load">
+          <el-radio-button :value="false">进行中</el-radio-button>
+          <el-radio-button :value="true">已归档</el-radio-button>
+        </el-radio-group>
         <el-button size="small" @click="showJoin = true">凭邀请码加入</el-button>
         <el-button type="primary" size="small" @click="showCreate = true">创建团队</el-button>
       </div>
     </div>
 
-    <el-empty v-if="!loading && teams.length === 0" description="还没有加入任何团队" />
+    <el-empty v-if="!loading && teams.length === 0"
+              :description="archived ? '没有已归档的团队' : '还没有加入任何团队'" />
 
     <div class="team-list">
       <div v-for="t in teams" :key="t.id" class="team-card">
@@ -21,6 +26,7 @@
           <el-tag size="small" :type="t.my_role === 'owner' ? 'warning' : t.my_role === 'admin' ? 'success' : 'info'">
             {{ roleLabel(t.my_role) }}
           </el-tag>
+          <el-tag v-if="t.archived" size="small" type="info" effect="plain">已归档</el-tag>
           <p class="team-desc">{{ t.description || '暂无简介' }}</p>
         </div>
       </div>
@@ -57,8 +63,18 @@
       <template v-if="detail">
         <p class="d-desc">{{ detail.description || '暂无简介' }}</p>
         <div class="d-actions" v-if="canManage">
-          <el-button size="small" @click="genInvite">生成邀请码</el-button>
+          <el-button size="small" :disabled="detail.archived" @click="genInvite">生成邀请码</el-button>
           <span v-if="inviteCode" class="invite-code">邀请码：<b>{{ inviteCode }}</b>（10 分钟内有效）</span>
+        </div>
+
+        <!-- 归档/解散（仅队长/ADMIN 展示入口；后端为权威校验） -->
+        <div class="d-actions" v-if="myRole === 'owner' || userStore.user?.role === 'admin'">
+          <el-button v-if="!detail.archived" size="small" type="warning" plain
+                     @click="setArchive(true)">归档团队</el-button>
+          <el-button v-else size="small" type="success" plain
+                     @click="setArchive(false)">恢复团队</el-button>
+          <el-button v-if="!detail.archived" size="small" type="danger" plain
+                     @click="disband">解散团队</el-button>
         </div>
 
         <h4>成员（{{ detail.members?.length ?? detail.member_count ?? 0 }}）</h4>
@@ -92,6 +108,7 @@ import { useUserStore } from '../stores/user'
 const userStore = useUserStore()
 const teams = ref<any[]>([])
 const loading = ref(false)
+const archived = ref(false) // 列表视角：false=进行中，true=已归档
 const showCreate = ref(false)
 const creating = ref(false)
 const createForm = ref({ name: '', description: '' })
@@ -117,9 +134,43 @@ const roleTag = (r: string) =>
 async function load() {
   loading.value = true
   try {
-    teams.value = await api.get('/teams') as any
+    teams.value = await api.get('/teams', {
+      params: { archived: archived.value ? 1 : 0 },
+    }) as any
   } finally {
     loading.value = false
+  }
+}
+
+// 归档/恢复：仅队长可操作（后端权威校验）。归档后列表隐藏、成员不可加入，可随时恢复
+async function setArchive(value: boolean) {
+  if (value) {
+    await ElMessageBox.confirm(
+      '归档后团队将从列表隐藏，成员不能加入，名下题目/题单/比赛照常保留，可随时恢复。',
+      '归档团队', { confirmButtonText: '归档', cancelButtonText: '取消' })
+  }
+  try {
+    await api.put(`/teams/${detail.value.id}/archive`, { archived: value })
+    ElMessage.success(value ? '已归档' : '已恢复')
+    detail.value = await api.get(`/teams/${detail.value.id}`) as any
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail ?? '操作失败')
+  }
+}
+
+// 解散团队：硬删除，不可恢复
+async function disband() {
+  await ElMessageBox.confirm(
+    '解散后团队及其成员关系将被永久删除，不可恢复！',
+    '解散团队', { confirmButtonText: '解散', cancelButtonText: '取消', type: 'warning' })
+  try {
+    await api.delete(`/teams/${detail.value.id}`)
+    ElMessage.success('已解散')
+    showDetail.value = false
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail ?? '解散失败')
   }
 }
 

@@ -86,6 +86,8 @@ async def create_submission(
     p = await db.get(Problem, req.problem_id)
     if p is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
+    if p.archived:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "题目已归档，不能再提交")
     # 可见性：题目本身公开，或通过题单间接授权（题单可见 → 题单内题目可提交）
     if not p.is_public:
         from app.models import OwnerType, Playlist, PlaylistProblem

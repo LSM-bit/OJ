@@ -1,6 +1,6 @@
 <!--
   PlaylistsView.vue - 题单列表 + 详情
-  公有/私有题单，显示我的完成进度
+  公有/私有题单，显示我的完成进度；有管理权者可编辑/删除题单（删除不可恢复）
   路由 /playlists（列表）与 /playlists/:id（详情，可直达/刷新）
 -->
 <template>
@@ -42,6 +42,8 @@
           </span>
           <el-button v-if="canManage" size="small" type="primary"
                      @click="openEdit">编辑题单</el-button>
+          <el-button v-if="canManage" size="small" type="danger" plain
+                     @click="removeCurrent">删除题单</el-button>
         </div>
       </div>
       <el-table :data="current.problems ?? []" stripe>
@@ -146,7 +148,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { CircleCheckFilled } from '@element-plus/icons-vue'
 import { api } from '../api/client'
 import { useUserStore } from '../stores/user'
@@ -169,13 +171,35 @@ const saving = ref(false)
 const editForm = ref({ title: '', description: '', is_public: false, problem_ids: [] as number[] })
 const addProblemId = ref<number | null>(null)
 
-// 我能否编辑当前题单（后端仍是权威校验，这里只是入口展示）
+// 我能否管理当前题单（后端仍是权威校验，这里只是入口展示）
+// 个人题单=本人；团队题单=队长/副队；ADMIN 总是
 const canManage = computed(() => {
   if (!current.value) return false
   if (userStore.user?.role === 'admin') return true
-  return current.value.owner_type === 'user' &&
-    current.value.owner_id === userStore.user?.id
+  if (current.value.owner_type === 'user') {
+    return current.value.owner_id === userStore.user?.id
+  }
+  if (current.value.owner_type === 'team') {
+    const t = myTeams.value.find((x) => x.id === current.value.team_id)
+    return t ? ['owner', 'admin'].includes(t.my_role) : false
+  }
+  return false
 })
+
+// 删除题单：硬删除不可恢复；playlist_problems 关联随之清除，题目本身不受影响
+async function removeCurrent() {
+  await ElMessageBox.confirm(
+    `删除后题单「${current.value.title}」及其题目清单将被永久移除，不可恢复！题目本身不受影响。`,
+    '删除题单', { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' })
+  try {
+    await api.delete(`/playlists/${current.value.id}`)
+    ElMessage.success('已删除')
+    backToList()
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail ?? '删除失败')
+  }
+}
 
 // 团队题单只允许队长/副队创建
 const manageableTeams = computed(() =>

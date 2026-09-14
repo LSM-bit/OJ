@@ -2,7 +2,7 @@
   ProblemManageView.vue - 出题中心（创作视角）
   与刷题列表（ProblemsView，只看公开题）分开：
   这里展示「我管理的题目」——自己的 + 团队的，含未公开草稿；
-  可创建题目（三步向导）、继续编辑、发布/撤回；也是创建题单/比赛的入口
+  可创建题目（三步向导）、继续编辑、发布/撤回、归档/恢复；也是创建题单/比赛的入口
 -->
 <template>
   <div class="page">
@@ -19,6 +19,13 @@
 
     <el-tabs v-model="tab">
       <el-tab-pane label="我的题目" name="problems">
+        <!-- 归档切换：默认看未归档；切到「已归档」只看归档题（可恢复） -->
+        <div class="filter-row">
+          <el-radio-group v-model="archived" size="small" @change="load">
+            <el-radio-button :value="false">未归档</el-radio-button>
+            <el-radio-button :value="true">已归档</el-radio-button>
+          </el-radio-group>
+        </div>
         <el-table :data="problems" stripe class="fill-table" v-loading="loading">
           <el-table-column prop="display_id" label="题号" width="80" />
           <el-table-column prop="title" label="标题" min-width="220">
@@ -42,42 +49,69 @@
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="170">
+          <el-table-column label="操作" width="220">
             <template #default="{ row }">
               <el-button size="small" text type="primary"
                          @click="$router.push(`/problems/${row.id}/edit`)">编辑</el-button>
               <el-button size="small" text @click="$router.push(`/problems/${row.id}`)">预览</el-button>
+              <!-- 未归档：可归档；已归档：可恢复 -->
+              <el-button v-if="!archived" size="small" text type="warning"
+                         @click="setArchive(row, true)">归档</el-button>
+              <el-button v-else size="small" text type="success"
+                         @click="setArchive(row, false)">恢复</el-button>
             </template>
           </el-table-column>
         </el-table>
         <el-empty v-if="!loading && problems.length === 0"
-                  description="还没有题目，点右上角「创建题目」开始出题" />
+                  :description="archived ? '没有已归档的题目' : '还没有题目，点右上角「创建题目」开始出题'" />
       </el-tab-pane>
     </el-tabs>
   </div>
 </template>
 
 <script setup lang="ts">
-// 出题中心：mine=1 拉取我管理的题目（含草稿）
+// 出题中心：mine=1 拉取我管理的题目（含草稿）；archived 切换归档/未归档视图
 import { onMounted, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api/client'
 
 const problems = ref<any[]>([])
 const loading = ref(false)
 const tab = ref('problems')
+const archived = ref(false)
 
 const DIFF = ['', '入门', '简单', '中等', '较难', '困难']
 const diffLabel = (d: number) => DIFF[d] ?? '未知'
 const diffTag = (d: number) => (['', 'info', 'success', 'warning', 'danger', 'danger'][d] ?? 'info') as any
 
-onMounted(async () => {
+async function load() {
   loading.value = true
   try {
-    problems.value = await api.get('/problems?mine=1') as any
+    problems.value = await api.get('/problems', {
+      params: { mine: 1, archived: archived.value ? 1 : 0 },
+    }) as any
   } finally {
     loading.value = false
   }
-})
+}
+
+// 归档/恢复（归档不删除，详情仍可访问，可随时恢复）
+async function setArchive(row: any, value: boolean) {
+  if (value) {
+    await ElMessageBox.confirm(
+      `归档「${row.title}」后将从题目列表中隐藏，且不能再提交；详情页仍可访问，可随时恢复。`,
+      '归档题目', { confirmButtonText: '归档', cancelButtonText: '取消' })
+  }
+  try {
+    await api.put(`/problems/${row.id}/archive`, { archived: value })
+    ElMessage.success(value ? '已归档' : '已恢复')
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail ?? '操作失败')
+  }
+}
+
+onMounted(load)
 </script>
 
 <style scoped>
@@ -94,6 +128,7 @@ onMounted(async () => {
   margin-bottom: 8px;
 }
 .head-actions { display: flex; gap: 8px; }
+.filter-row { margin-bottom: 12px; }
 .fill-table { width: 100%; }
 .title-link { color: var(--el-color-primary); text-decoration: none; }
 .title-link:hover { text-decoration: underline; }

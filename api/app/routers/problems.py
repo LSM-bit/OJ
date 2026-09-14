@@ -85,11 +85,14 @@ async def list_problems(
     page: int = 1, size: int = 50,
     mine: int = 0,  # 1 = 出题视角：我管理的（含未公开草稿）；0 = 刷题视角：公开题
     tag: str | None = None,  # 标签筛选：匹配 tags JSONB 数组任一元素（多个用逗号分隔，取交集）
+    archived: int = 0,  # 1 = 仅看已归档题目（mine=1 出题视角下有效）；默认一律排除归档题
     db: AsyncSession = Depends(get_db),
     user: User | None = Depends(get_optional_user_import),
 ):
     """mine=0 刷题视角：公开题目；mine=1 出题视角：我拥有的 + 我团队的（含草稿，ADMIN 全量）
-    tag=模拟,数学：题目 tags 数组需包含所有给定标签（JSONB 包含查询）"""
+    tag=模拟,数学：题目 tags 数组需包含所有给定标签（JSONB 包含查询）
+    归档题不进列表；mine=1 且 archived=1 时只看归档题（归档/恢复管理入口）"""
+    is_archived = bool(archived)
     if mine:
         if user is None:
             return []
@@ -100,8 +103,12 @@ async def list_problems(
             stmt = select(Problem).where(
                 ((Problem.owner_type == OwnerType.USER) & (Problem.owner_id == user.id))
                 | ((Problem.owner_type == OwnerType.TEAM) & Problem.owner_id.in_(my_team_ids)))
+        stmt = stmt.where(Problem.archived == is_archived)
     else:
-        stmt = select(Problem).where(Problem.is_public == True)  # noqa: E712
+        # 刷题视角：公开且未归档
+        stmt = select(Problem).where(
+            Problem.is_public == True,  # noqa: E712
+            Problem.archived == False)  # noqa: E712
     # 标签筛选：tags 为 JSONB 数组，@> 按包含语义匹配（SQLite 测试环境降级为 LIKE）
     if tag:
         wanted = [t.strip() for t in tag.split(",") if t.strip()]
@@ -125,8 +132,10 @@ async def list_problems(
 
 @router.get("/tags")
 async def list_tags(db: AsyncSession = Depends(get_db)):
-    """全站标签云：公开题目的标签及使用次数（降序），供前端筛选面板展示"""
-    rows = await db.scalars(select(Problem.tags).where(Problem.is_public == True))  # noqa: E712
+    """全站标签云：公开题目的标签及使用次数（降序），供前端筛选面板展示。归档题不计入"""
+    rows = await db.scalars(select(Problem.tags).where(
+        Problem.is_public == True,  # noqa: E712
+        Problem.archived == False))  # noqa: E712
     counter: dict[str, int] = {}
     for tags in rows:
         for t in tags or []:
@@ -519,3 +528,19 @@ async def publish_problem(
     p.is_public = want_public
     await db.commit()
     return {"ok": True, "is_public": p.is_public}
+
+
+@router.put("/{problem_id}/archive")
+async def archive_problem(
+    problem_id: int,
+    body: dict,
+    p: Problem = Depends(ProblemAccess("manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    """归档/取消归档。body {"archived": true|false}
+    归档后：不进题目列表（公开/管理视角均默认排除），不可再提交；
+    详情页仍可访问（已有引用不失效），可随时恢复。"""
+    want_archived = bool(body.get("archived", True))
+    p.archived = want_archived
+    await db.commit()
+    return {"ok": True, "archived": p.archived}
