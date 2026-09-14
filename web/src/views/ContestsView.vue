@@ -1,6 +1,9 @@
 <!--
   ContestsView.vue - 比赛列表页
   参考牛客 OJ 风格：卡片式比赛列表，展示赛制/状态/时间，支持报名跳转
+  分类规则：比赛分「未结束」（含未开始/进行中/结束未满 24h）与
+  「已结束（归档）」（结束满 24h 自动归档）两类，筛选按 archived 字段分桶；
+  卡片标签仍显示细粒度阶段（进行中/未开始/已结束），归档的额外挂「已归档」标
 -->
 <template>
   <div v-loading="loading" class="page">
@@ -9,9 +12,8 @@
       <div class="head-actions">
         <el-radio-group v-model="phaseFilter" size="small">
           <el-radio-button value="">全部</el-radio-button>
-          <el-radio-button value="running">进行中</el-radio-button>
-          <el-radio-button value="upcoming">未开始</el-radio-button>
-          <el-radio-button value="ended">已结束</el-radio-button>
+          <el-radio-button value="open">未结束</el-radio-button>
+          <el-radio-button value="archived">已结束（归档）</el-radio-button>
         </el-radio-group>
         <el-button v-if="userStore.isLoggedIn" type="primary" size="small"
                    @click="$router.push('/contests/new')">创建比赛</el-button>
@@ -25,6 +27,7 @@
         <div class="card-main">
           <div class="card-title-row">
             <el-tag :type="phaseTag(c.phase)" size="small" effect="dark">{{ phaseLabel(c.phase) }}</el-tag>
+            <el-tag v-if="c.archived" type="info" size="small" effect="plain">已归档</el-tag>
             <el-tag v-if="!c.is_public" type="info" size="small" effect="plain">私有</el-tag>
             <span class="card-title">{{ c.title }}</span>
           </div>
@@ -58,8 +61,12 @@ const contests = ref<any[]>([])
 const loading = ref(false)
 const phaseFilter = ref('')
 
-const filtered = computed(() =>
-  phaseFilter.value ? contests.value.filter((c) => c.phase === phaseFilter.value) : contests.value)
+// 分类筛选：open=未结束（含结束未满 24h），archived=已结束（归档），''=全部
+const filtered = computed(() => {
+  if (phaseFilter.value === 'open') return contests.value.filter((c) => !c.archived)
+  if (phaseFilter.value === 'archived') return contests.value.filter((c) => c.archived)
+  return contests.value
+})
 
 const phaseLabel = (p: string) => ({ running: '进行中', upcoming: '未开始', ended: '已结束' }[p] ?? p)
 const phaseTag = (p: string) => ({ running: 'success', upcoming: 'warning', ended: 'info' }[p] ?? 'info') as any

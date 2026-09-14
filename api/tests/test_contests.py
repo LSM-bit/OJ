@@ -344,6 +344,71 @@ async def test_contest_submission_detail_ce_error_visible(client, normal_user, d
     assert d["code"] == AC_CODE
 
 
+async def test_archived_contest_no_edit_but_submit_and_vp(client, normal_user, db_sessionmaker, gateway):
+    """结束满 24h 自动归档：不能再编辑；仍可提交练习、可创建重现赛(VP)"""
+    p = await _setup_problem(client, normal_user)
+    # start 1501min 前 + 60min 时长 → 结束已满 24h 又 1 分钟
+    r = await client.post("/contests", json={
+        "title": "old-contest", "problem_ids": [p["id"]],
+        **_time_window(start_min=-1501, duration=60)},
+        headers=await auth_header(normal_user))
+    cid = r.json()["id"]
+    assert r.json()["archived"] is True
+
+    # 详情与列表都携带派生的 archived 标记（前端按它分「未结束/已结束(归档)」两类）
+    r = await client.get(f"/contests/{cid}")
+    assert r.json()["archived"] is True
+    r = await client.get("/contests")
+    assert any(x["id"] == cid and x["archived"] for x in r.json())
+
+    # 归档后不能再编辑比赛信息
+    future = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    r = await client.patch(f"/contests/{cid}", json={"end_at": future},
+                           headers=await auth_header(normal_user))
+    assert r.status_code == 400 and "归档" in r.json()["detail"]
+
+    # 仍可提交：未报名的旁观者也能对归档比赛做练习提交
+    async with db_sessionmaker() as db:
+        visitor = await make_user(db, "archived_visitor")
+    body = await _submit_in_contest(client, cid, visitor, gateway)
+    assert body["status"] == "ac"
+
+    # 可创建重现赛：默认私有、复制题目与别名、自动报名、立即开始
+    r = await client.post(f"/contests/{cid}/vp", json={},
+                          headers=await auth_header(visitor))
+    assert r.status_code == 201, r.text
+    vp = r.json()
+    assert vp["vp_of"] == cid
+    assert vp["is_public"] is False and vp["archived"] is False
+    assert vp["phase"] == "running" and vp["board_freeze_minutes"] == 0
+    assert vp["problems"] == 1 and "重现赛" in vp["title"]
+    r = await client.get(f"/contests/{vp['id']}", headers=await auth_header(visitor))
+    assert r.json()["problems"][0]["alias"] == "A"
+    rows = (await client.get(f"/contests/{vp['id']}/standings",
+                             headers=await auth_header(visitor))).json()["rows"]
+    assert [x["username"] for x in rows] == ["archived_visitor"]  # 创建者已自动报名
+
+    # VP 时间窗非法同样被拒
+    r = await client.post(f"/contests/{cid}/vp",
+                          json={"start_at": future, "end_at": future},
+                          headers=await auth_header(visitor))
+    assert r.status_code == 400
+
+
+async def test_ended_not_archived_still_editable(client, normal_user, gateway):
+    """结束未满 24h 不算归档：仍可编辑（改时间也会顺延归档时刻，派生设计）"""
+    p = await _setup_problem(client, normal_user)
+    r = await client.post("/contests", json={
+        "title": "t", "problem_ids": [p["id"]], **_time_window(start_min=-180, duration=120)},
+        headers=await auth_header(normal_user))
+    body = r.json()
+    assert body["phase"] == "ended" and body["archived"] is False
+    future = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    r = await client.patch(f"/contests/{body['id']}", json={"end_at": future},
+                           headers=await auth_header(normal_user))
+    assert r.status_code == 200
+
+
 # ---------------- 工具 ----------------
 
 def await_or_raise(task):

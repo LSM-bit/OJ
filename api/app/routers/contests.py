@@ -1,4 +1,9 @@
-"""比赛路由：创建/列表/详情/报名/比赛题目/提交/榜单"""
+"""比赛路由：创建/列表/详情/报名/比赛题目/提交/榜单/归档/重现赛(VP)
+
+归档规则：比赛结束满 24 小时后自动归档（派生状态，不落库）。
+归档后的比赛：仍可提交练习、可创建重现赛（VP），但不能再编辑比赛信息。
+比赛分类：未结束（含未开始/进行中/结束未满 24h）与 已结束（已归档）两类。
+"""
 
 import json
 from datetime import datetime, timedelta, timezone
@@ -59,6 +64,14 @@ def _aware(dt: datetime) -> datetime:
     return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
 
+# 归档宽限期：结束满 24h 自动归档（派生状态，改 end_at 即随之变化，无需落库/迁移）
+ARCHIVE_AFTER_END = timedelta(hours=24)
+
+
+def _is_archived(c: Contest, now: datetime) -> bool:
+    return now > _aware(c.end_at) + ARCHIVE_AFTER_END
+
+
 def _contest_out(c: Contest) -> dict:
     now = datetime.now(timezone.utc)
     start, end = _aware(c.start_at), _aware(c.end_at)
@@ -70,6 +83,7 @@ def _contest_out(c: Contest) -> dict:
         phase = ContestStatus.RUNNING
     return {
         "id": c.id, "title": c.title, "rule": c.rule.value, "phase": phase.value,
+        "archived": _is_archived(c, now),
         "start_at": c.start_at.isoformat(), "end_at": c.end_at.isoformat(),
         "board_freeze_minutes": c.board_freeze_minutes,
         "description": c.description,
@@ -198,6 +212,50 @@ async def register_contest(
     return {"ok": True}
 
 
+class ContestVpCreate(BaseModel):
+    """重现赛（VP）参数：时间窗缺省为「立即开始、时长与原赛相同」"""
+    title: str | None = Field(default=None, max_length=128)
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    is_public: bool = False
+
+
+@router.post("/{contest_id}/vp", status_code=201)
+async def create_virtual_replay(
+    contest_id: int,
+    req: ContestVpCreate,
+    c: Contest = Depends(ContestAccess("view")),
+    db: AsyncSession = Depends(get_db),
+    user: User = CurrentUser,
+):
+    """创建重现赛（VP）：复制原比赛的题目与基本信息，新建一场归属自己的比赛。
+    原比赛（含已归档）任何阶段都可 VP；新赛默认私有、不封榜，创建者自动报名。"""
+    now = datetime.now(timezone.utc)
+    duration = _aware(c.end_at) - _aware(c.start_at)
+    start = _aware(req.start_at) if req.start_at else now
+    end = _aware(req.end_at) if req.end_at else start + duration
+    if end <= start:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "结束时间必须晚于开始时间")
+    nc = Contest(
+        title=(req.title or f"{c.title}（重现赛）")[:128],
+        description=c.description, rule=c.rule,
+        start_at=start, end_at=end,
+        board_freeze_minutes=0,  # VP 重新计时，不沿用原封榜
+        is_public=req.is_public, owner_type=OwnerType.USER, owner_id=user.id,
+    )
+    db.add(nc)
+    await db.flush()
+    cps = (await db.scalars(
+        select(ContestProblem).where(ContestProblem.contest_id == contest_id)
+        .order_by(ContestProblem.alias))).all()
+    for cp in cps:
+        db.add(ContestProblem(contest_id=nc.id, problem_id=cp.problem_id,
+                              alias=cp.alias))
+    db.add(ContestParticipant(contest_id=nc.id, user_id=user.id))
+    await db.commit()
+    return {**_contest_out(nc), "vp_of": c.id, "problems": len(cps)}
+
+
 @router.get("/{contest_id}/standings")
 async def standings(contest_id: int, c: Contest = Depends(ContestAccess("view")),
                     db: AsyncSession = Depends(get_db)):
@@ -311,22 +369,25 @@ async def contest_submit(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """比赛内提交：body 为 JSON {language, code}"""
+    """比赛内提交：body 为 JSON {language, code}
+    时间窗：开始后均可提交；结束后/归档后作为练习继续开放（规则见模块头注释）。
+    注意：结束后提交也会计入榜单重放（现有榜单语义），练习提交请知悉。"""
     language = body.get("language", "python3.12")
     code = body.get("code", "")
     if not code.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "代码不能为空")
     now = datetime.now(timezone.utc)
-    if now < _aware(c.start_at) or now > _aware(c.end_at):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "比赛未在进行中")
+    if now < _aware(c.start_at):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "比赛尚未开始")
 
-    # 参赛校验
-    participant = await db.scalar(
-        select(ContestParticipant).where(
-            ContestParticipant.contest_id == contest_id,
-            ContestParticipant.user_id == user.id))
-    if participant is None and user.role != UserRole.ADMIN:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "请先报名比赛")
+    # 参赛校验：进行中的比赛必须报名；已结束/已归档属于练习提交，对可见者开放
+    if now <= _aware(c.end_at):
+        participant = await db.scalar(
+            select(ContestParticipant).where(
+                ContestParticipant.contest_id == contest_id,
+                ContestParticipant.user_id == user.id))
+        if participant is None and user.role != UserRole.ADMIN:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "请先报名比赛")
 
     cp = await db.scalar(
         select(ContestProblem).where(
@@ -388,7 +449,7 @@ async def contest_submit(
 # ---------- 比赛管理（创建者/团队管理员/ADMIN） ----------
 
 class ContestUpdate(BaseModel):
-    """比赛信息编辑：结束前可改时间与封榜"""
+    """比赛信息编辑：归档（结束满 24h）前可改时间与封榜"""
     start_at: datetime | None = None
     end_at: datetime | None = None
     board_freeze_minutes: int | None = Field(default=None, ge=0)
@@ -401,9 +462,10 @@ async def update_contest(
     c: Contest = Depends(ContestAccess("manage")),
     db: AsyncSession = Depends(get_db),
 ):
-    """编辑比赛时间：仅比赛结束前可改；结束时间必须晚于开始时间"""
-    if _aware(c.end_at) <= datetime.now(timezone.utc):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "比赛已结束，不能再编辑")
+    """编辑比赛时间：归档（结束满 24h）前可改；结束时间必须晚于开始时间"""
+    if _is_archived(c, datetime.now(timezone.utc)):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "比赛已归档（结束后满 24 小时），不能再编辑")
     start = _aware(req.start_at) if req.start_at is not None else _aware(c.start_at)
     end = _aware(req.end_at) if req.end_at is not None else _aware(c.end_at)
     if end <= start:

@@ -18,6 +18,8 @@ const router = createRouter({
     { path: '/problems/:id/edit', name: 'problem-edit', component: () => import('../views/ProblemEditView.vue') },
     { path: '/contests', name: 'contests', component: () => import('../views/ContestsView.vue') },
     { path: '/contests/new', name: 'contest-new', component: () => import('../views/ContestEditView.vue') },
+    // 创建比赛第二步：选择题目（独立页，支持标签筛选 / 题号标题搜索 / 分页）
+    { path: '/contests/new/pick', name: 'contest-new-pick', component: () => import('../views/ContestProblemPickView.vue') },
     { path: '/contests/:id', name: 'contest-detail', component: () => import('../views/ContestDetailView.vue') },
     { path: '/contests/:id/problems/:alias', name: 'contest-problem', component: () => import('../views/ContestProblemView.vue') },
     { path: '/teams', name: 'teams', component: () => import('../views/TeamsView.vue') },

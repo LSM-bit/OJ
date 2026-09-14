@@ -1,7 +1,8 @@
 <!--
-  ContestEditView.vue - 创建比赛页
+  ContestEditView.vue - 创建比赛第一步：基本信息
   权限模型：所有登录用户都可创建比赛（后端强校验），支持归属个人或团队
-  表单：标题/简介/赛制/时间/封榜 + 从自己可见的公有题目中挑选比赛题目（按 A/B/C 顺序）
+  表单：标题/简介/赛制/时间/封榜/归属/可见性；题目挑选在第二步独立页
+  （ContestProblemPickView），表单数据存 sessionStorage(contest_new_draft) 传递
 -->
 <template>
   <div class="page">
@@ -9,6 +10,12 @@
       <h2>创建比赛</h2>
       <el-button size="small" @click="$router.push('/contests')">返回比赛列表</el-button>
     </div>
+
+    <!-- 步骤条 -->
+    <el-steps :active="1" align-center class="steps">
+      <el-step title="基本信息" />
+      <el-step title="选择题目" />
+    </el-steps>
 
     <el-form label-width="110px" label-position="left" class="form">
       <el-form-item label="比赛标题">
@@ -56,35 +63,19 @@
       </el-form-item>
       <el-form-item label="比赛题目">
         <div class="problems-pick">
-          <el-select v-model="pickProblemId" filterable placeholder="添加题目（我的/团队/公开题目）"
-                     style="width: 280px" @change="addProblem">
-            <el-option v-for="p in selectableProblems" :key="p.id"
-                       :label="`#${p.display_id} ${p.title}`" :value="p.id" />
-          </el-select>
-          <el-table v-if="pickedProblems.length" :data="pickedProblems" size="small" class="pick-table">
-            <el-table-column label="题号" width="70">
-              <template #default="{ $index }">{{ String.fromCharCode(65 + $index) }}</template>
-            </el-table-column>
-            <el-table-column prop="title" label="标题" min-width="200" />
-            <el-table-column label="操作" width="80">
-              <template #default="{ $index }">
-                <el-button size="small" text type="danger" @click="pickedProblems.splice($index, 1)">
-                  移除
-                </el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-          <div v-else class="pick-hint">暂未添加题目，创建后也可以再配置</div>
+          <span class="pick-hint">下一步选择比赛题目（支持标签筛选、题号/标题搜索），也可以之后再配置</span>
         </div>
       </el-form-item>
       <el-form-item>
-        <el-button type="primary" :loading="submitting" @click="submit">创建比赛</el-button>
+        <el-button type="primary" @click="goPick">下一步：选择题目</el-button>
       </el-form-item>
     </el-form>
   </div>
 </template>
 
 <script setup lang="ts">
+// 第一步：填写基本信息 → 存草稿到 sessionStorage → 跳 /contests/new/pick 选题创建
+// 回到本页时自动恢复草稿（从第二步点「上一步」返回不丢已填内容）
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -94,7 +85,7 @@ import { useUserStore } from '../stores/user'
 const router = useRouter()
 const userStore = useUserStore()
 
-const submitting = ref(false)
+const DRAFT_KEY = 'contest_new_draft'
 const form = ref({
   title: '',
   rule: 'acm',
@@ -115,53 +106,21 @@ const visibilityHint = computed(() =>
       ? '仅团队成员可见（团队内部比赛）'
       : '仅自己可见')
 
-// 题目挑选（出题视角：自己的私有题也可入赛；他人私有题后端会拒绝）
-const allProblems = ref<any[]>([])
-const pickedProblems = ref<any[]>([])
-// 雪花 ID 超出 Number 安全范围，统一用字符串保存
-const pickProblemId = ref<string>('')
-const selectableProblems = computed(() =>
-  allProblems.value.filter((p) => !pickedProblems.value.some((x) => x.id === p.id)))
-
 // 团队列表（仅可管理的）
 const myTeams = ref<any[]>([])
 const manageableTeams = computed(() =>
   myTeams.value.filter((t) => ['owner', 'admin'].includes(t.my_role)))
 
-function addProblem(pid: string) {
-  const p = allProblems.value.find((x) => x.id === pid)
-  if (p) pickedProblems.value.push(p)
-  pickProblemId.value = ''
-}
-
-async function submit() {
+// 校验基本信息后存草稿，进入第二步选题页
+function goPick() {
   if (!form.value.title.trim()) return ElMessage.warning('请填写比赛标题')
   if (!form.value.start_at || !form.value.end_at) return ElMessage.warning('请选择开始/结束时间')
+  if (new Date(form.value.end_at) <= new Date(form.value.start_at))
+    return ElMessage.warning('结束时间必须晚于开始时间')
   if (form.value.owner_type === 'team' && !form.value.team_id)
     return ElMessage.warning('请选择归属团队')
-  submitting.value = true
-  try {
-    const body: any = {
-      title: form.value.title.trim(),
-      description: form.value.description,
-      rule: form.value.rule,
-      // value-format 含秒的本地时间串；Date 构造按本地时区解析，转真正的 UTC ISO
-      start_at: new Date(form.value.start_at).toISOString(),
-      end_at: new Date(form.value.end_at).toISOString(),
-      board_freeze_minutes: form.value.board_freeze_minutes,
-      owner_type: form.value.owner_type,
-      is_public: form.value.is_public,
-      problem_ids: pickedProblems.value.map((p) => p.id),
-    }
-    if (form.value.owner_type === 'team') body.team_id = form.value.team_id
-    const created: any = await api.post('/contests', body)
-    ElMessage.success('比赛已创建')
-    router.push(`/contests/${created.id}`)
-  } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail ?? '创建失败')
-  } finally {
-    submitting.value = false
-  }
+  sessionStorage.setItem(DRAFT_KEY, JSON.stringify(form.value))
+  router.push('/contests/new/pick')
 }
 
 onMounted(async () => {
@@ -170,8 +129,11 @@ onMounted(async () => {
     router.push('/login')
     return
   }
-  // mine=1：出题视角，自己的私有题也可选入比赛
-  allProblems.value = await api.get('/problems?mine=1') as any
+  // 恢复草稿（仅当存在时；新建流程首次进入为空不动）
+  const raw = sessionStorage.getItem(DRAFT_KEY)
+  if (raw) {
+    try { Object.assign(form.value, JSON.parse(raw)) } catch { /* ignore */ }
+  }
   myTeams.value = await api.get('/teams') as any
 })
 </script>
@@ -190,9 +152,9 @@ onMounted(async () => {
   margin-bottom: 16px;
 }
 .page-head h2 { margin: 0; }
+.steps { max-width: 420px; margin-bottom: 18px; }
 .form { max-width: 720px; }
 .unit { margin-left: 8px; color: var(--el-text-color-secondary); font-size: 13px; }
 .problems-pick { width: 100%; }
-.pick-table { margin-top: 10px; }
 .pick-hint { color: var(--el-text-color-secondary); font-size: 13px; margin-top: 6px; }
 </style>

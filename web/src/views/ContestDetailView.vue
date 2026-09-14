@@ -1,6 +1,7 @@
 <!--
   ContestDetailView.vue - 比赛详情页（参考牛客 OJ）
   上方：比赛信息头（状态/赛制/时间/倒计时/报名按钮，管理者显示「编辑」入口）
+  归档规则：结束满 24h 自动归档 —— 归档后隐藏编辑入口，仍可提交练习、可创建重现赛(VP)
   Tab：比赛题目（管理者可批量重测）| 排行榜（ACM 罚时/封榜气泡）| 公告（管理者可发布）
   题目 tab 内点击题目行内展开提交框，比赛内提交
 -->
@@ -11,10 +12,18 @@
       <div class="contest-header">
         <div class="ch-top">
           <el-tag :type="phaseTag(contest.phase)" effect="dark" size="small">{{ phaseLabel(contest.phase) }}</el-tag>
+          <el-tag v-if="contest.archived" type="info" size="small" effect="plain">已归档</el-tag>
           <h2 class="ch-title">{{ contest.title }}</h2>
-          <el-button v-if="contest.is_manageable" size="small" @click="openEdit">
+          <!-- 归档（结束满 24h）后不能再编辑比赛信息 -->
+          <el-button v-if="contest.is_manageable && !contest.archived" size="small" @click="openEdit">
             <el-icon style="margin-right:4px"><Edit /></el-icon>编辑
           </el-button>
+          <!-- 重现赛：任何登录用户可对自己可见的比赛发起 VP（含已归档） -->
+          <el-button
+            v-if="userStore.isLoggedIn"
+            type="primary" plain size="small"
+            @click="openVp"
+          >创建重现赛</el-button>
           <el-button
             v-if="userStore.isLoggedIn"
             type="primary" size="small"
@@ -31,7 +40,7 @@
           <span class="divider">|</span>
           <span v-if="contest.phase === 'running'" class="countdown">剩余 {{ countdown }}</span>
           <span v-else-if="contest.phase === 'upcoming'">尚未开始</span>
-          <span v-else>已结束</span>
+          <span v-else>{{ contest.archived ? '已结束（已归档，不可编辑）' : '已结束' }}</span>
           <template v-if="contest.board_freeze_minutes > 0">
             <span class="divider">|</span>
             <span>赛前 {{ contest.board_freeze_minutes }} 分钟封榜</span>
@@ -82,6 +91,9 @@
           <!-- 行内提交面板 -->
           <div v-if="submitTarget" class="submit-panel">
             <h4>提交 · {{ submitTarget.alias }}. {{ submitTarget.title }}</h4>
+            <el-alert v-if="contest.archived" type="info" :closable="false" show-icon
+                      title="比赛已归档：可继续提交练习（提交结果同样会计入榜单展示）"
+                      style="margin-bottom:10px" />
             <el-select v-model="language" size="small" style="width:180px; margin-bottom:8px">
               <el-option label="Python 3.12" value="python3.12" />
               <el-option label="C++17" value="cpp17" />
@@ -236,6 +248,31 @@
         </el-tab-pane>
       </el-tabs>
 
+      <!-- 创建重现赛（VP）：复制题目与基本信息，时间窗缺省为立即开始、时长与原赛相同 -->
+      <el-dialog v-model="showVp" title="创建重现赛" width="460">
+        <el-form label-width="90px" size="small">
+          <el-form-item label="标题">
+            <el-input v-model="vpForm.title" maxlength="128" show-word-limit
+                      :placeholder="`默认为「${contest.title}（重现赛）」`" />
+          </el-form-item>
+          <el-form-item label="可见性">
+            <el-radio-group v-model="vpForm.is_public">
+              <el-radio-button :value="false">私有</el-radio-button>
+              <el-radio-button :value="true">公开</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item>
+            <span class="form-tip">
+              时间：立即开始，时长与原赛相同（{{ durationLabel }}）；不封榜，自动报名。
+            </span>
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button size="small" @click="showVp = false">取消</el-button>
+          <el-button type="primary" size="small" :loading="vpCreating" @click="createVp">创建</el-button>
+        </template>
+      </el-dialog>
+
       <!-- 编辑比赛时间（仅结束前） -->
       <el-dialog v-model="showEdit" title="编辑比赛时间" width="460">
         <el-form label-width="90px" size="small">
@@ -266,7 +303,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Edit } from '@element-plus/icons-vue'
 import { api } from '../api/client'
@@ -274,6 +311,7 @@ import { shortId } from '../utils/format'
 import { useUserStore } from '../stores/user'
 
 const route = useRoute()
+const router = useRouter()
 const userStore = useUserStore()
 
 const contest = ref<any>(null)
@@ -295,6 +333,9 @@ const editForm = reactive({ start_at: '', end_at: '', board_freeze_minutes: 0 })
 
 // 批量重测
 const rejudging = ref('')
+
+// 重现赛（VP）
+const vpCreating = ref(false)
 
 // 提交记录（登录用户可见；管理者可看所有人并按用户名筛选）
 const subs = ref({ total: 0, items: [], can_view_all: false })
@@ -353,6 +394,15 @@ const countdown = computed(() => {
   const h = Math.floor(s / 3600); s %= 3600
   const m = Math.floor(s / 60)
   return `${h}:${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+})
+
+// VP 弹窗提示：原赛时长（新赛默认「立即开始 + 相同时长」）
+const durationLabel = computed(() => {
+  if (!contest.value) return ''
+  const mins = Math.max(0, Math.round(
+    (new Date(contest.value.end_at).getTime() - new Date(contest.value.start_at).getTime()) / 60000))
+  const h = Math.floor(mins / 60)
+  return h > 0 ? `${h} 小时 ${mins % 60} 分钟` : `${mins} 分钟`
 })
 
 const phaseLabel = (p: string) => ({ running: '进行中', upcoming: '未开始', ended: '已结束' }[p] ?? p)
@@ -496,6 +546,34 @@ async function register() {
     ElMessage.success('报名成功')
   } catch (e: any) {
     ElMessage.error(e.response?.data?.detail ?? '报名失败')
+  }
+}
+
+// ---------- 重现赛（VP） ----------
+// 弹窗确认：标题可改，时间窗缺省「立即开始、时长与原赛相同」；创建后跳转到新比赛
+const showVp = ref(false)
+const vpForm = reactive({ title: '', is_public: false })
+
+function openVp() {
+  vpForm.title = ''
+  vpForm.is_public = false
+  showVp.value = true
+}
+
+async function createVp() {
+  vpCreating.value = true
+  try {
+    const r = await api.post(`/contests/${contest.value.id}/vp`, {
+      title: vpForm.title.trim() || undefined,
+      is_public: vpForm.is_public,
+    }) as any
+    showVp.value = false
+    ElMessage.success(`重现赛已创建（${r.problems} 道题），已自动报名`)
+    await router.push(`/contests/${r.id}`)
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail ?? '创建重现赛失败')
+  } finally {
+    vpCreating.value = false
   }
 }
 
