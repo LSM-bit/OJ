@@ -149,6 +149,7 @@ export const useAssistantStore = defineStore('assistant', {
       const content = (text ?? this.input).trim()
       if (!content || this.sending) return
       this.input = ''
+      const wasNew = !this.currentId  // 首轮：后端会异步 LLM 摘要标题，稍后要再刷一次列表
       this.messages.push({ role: 'user', text: content, tools: [], at: fmtTime() })
       const draft: ChatMsg = { role: 'assistant', text: '', tools: [], streaming: true, at: fmtTime() }
       this.messages.push(draft)
@@ -184,6 +185,8 @@ export const useAssistantStore = defineStore('assistant', {
         this.sending = false
         this.abort = null
         this.loadConversations()
+        // 新会话首轮：后端异步 LLM 标题摘要晚于本流结束，延迟再刷一次列表拿新标题
+        if (wasNew) setTimeout(() => this.loadConversations(), 2500)
       }
     },
     async _handleHttpError(resp: Response) {

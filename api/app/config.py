@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     assistant_model: str = "claude-sonnet-5"
     assistant_daily_quota: int = 100          # 每用户每日对话轮数上限
     assistant_run_sample_quota: int = 20      # run_on_sample 每日次数上限
+    assistant_title_summary: bool = True      # 首轮后用 LLM 给会话起标题（关掉则保留截断兜底）
 
     # JWT
     jwt_secret: str = "dev-secret-change-me"

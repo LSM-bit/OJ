@@ -10,19 +10,27 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.assistant_gateway.gen.assistant.v1 import assistant_pb2
 from app.config import settings
 from app.models import (AssistantConversation, AssistantMessage, Contest,
                         ContestParticipant, ContestRule, Problem, Submission,
                         SubmissionStatus, User)
+from app.routers.assistant import _title_tasks
 
 from tests.conftest import (add_fake_assistant_node, auth_header, make_user,
                             push_assistant_events, take_assistant_job,
                             take_tool_results)
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture(autouse=True)
+def _title_summary_off_by_default(monkeypatch):
+    """默认关闭标题摘要，避免摘要 job 混进假节点队列干扰既有 take_assistant_job 断言；
+    摘要行为由文件末尾两个专用用例显式开启验证。"""
+    monkeypatch.setattr(settings, "assistant_title_summary", False)
 
 _display_seq = 1000
 
@@ -368,3 +376,62 @@ async def test_tool_get_hint_with_problem_context_ok(client, normal_user, assist
     assert tr[0].is_error is False and "hint" in tr[0].content_json
     # system prompt 带上了题目上下文
     assert "当前上下文是一道题" in job.system
+
+
+# ---------------- 会话标题自动摘要（阶段8-B） ----------------
+
+async def _drain_title_tasks():
+    """等 fire-and-forget 的摘要任务全部收尾（done 回调从 _title_tasks 移除）"""
+    for _ in range(50):
+        tasks = list(_title_tasks)
+        if not tasks:
+            return
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.sleep(0)
+    raise AssertionError("_title_tasks 未排空")
+
+
+async def test_title_summary_second_job_updates_title(client, normal_user, assistant_gateway,
+                                                      db_sessionmaker, monkeypatch):
+    monkeypatch.setattr(settings, "assistant_title_summary", True)
+    h = await auth_header(normal_user)
+    job, resp, node = await _chat(client, h, assistant_gateway,
+                                  message="输入两个整数输出它们的和")
+    assert resp.status_code == 200
+    conv_id = int(_sse_events(resp.text)[-1][1]["conversation_id"])
+
+    # 首轮 done 后应派发第二个「零工具」ChatJob 专门起标题
+    job2 = await take_assistant_job(node)
+    assert job2.job_id != job.job_id
+    assert json.loads(job2.tools_json) == []          # 无工具 → 节点单轮直出
+    assert job2.max_tokens == 32
+    assert "标题" in job2.system
+    prompt = json.loads(job2.messages_json)[0]["content"][0]["text"]
+    assert "输入两个整数输出它们的和" in prompt and "答案是 3" in prompt
+
+    # 模型给出带书名号/句号的标题 → 清洗后覆盖
+    push_assistant_events(assistant_gateway, job2,
+                          [_done(job2.job_id, text="《两数求和》。")])
+    await _drain_title_tasks()
+    async with db_sessionmaker() as db:
+        conv = await db.get(AssistantConversation, conv_id)
+        assert conv.title == "两数求和"
+        # 摘要不产生消息行（日配额与回放不受影响）：仅 user + assistant 两行
+        assert (await db.scalar(select(func.count()).select_from(AssistantMessage)
+                .where(AssistantMessage.conversation_id == conv_id))) == 2
+
+
+async def test_title_summary_failure_keeps_fallback(client, normal_user, assistant_gateway,
+                                                    db_sessionmaker, monkeypatch):
+    monkeypatch.setattr(settings, "assistant_title_summary", True)
+    h = await auth_header(normal_user)
+    job, resp, node = await _chat(client, h, assistant_gateway, message="这题怎么想")
+    conv_id = int(_sse_events(resp.text)[-1][1]["conversation_id"])
+
+    job2 = await take_assistant_job(node)
+    push_assistant_events(assistant_gateway, job2,
+                          [assistant_pb2.ChatError(job_id=job2.job_id, message="模型不可用")])
+    await _drain_title_tasks()  # 静默失败，不抛
+    async with db_sessionmaker() as db:
+        conv = await db.get(AssistantConversation, conv_id)
+        assert conv.title == "这题怎么想"  # message[:30] 兜底保留

@@ -20,6 +20,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -42,6 +43,21 @@ router = APIRouter(prefix="/assistant", tags=["assistant"])
 
 HISTORY_LIMIT = 30          # 上下文携带的历史消息条数上限（§3：超30条从最旧截断）
 MESSAGE_MAX_CHARS = 8000
+
+# 标题摘要（阶段8-B）：首轮 done 后 fire-and-forget 一个无工具 ChatJob，
+# task 收进模块级集合防 GC（测试可 gather 排空后断言 title）
+_title_tasks: set[asyncio.Task] = set()
+
+TITLE_SYSTEM = ("你是会话标题生成器。根据下面的用户问题与助手回答，"
+                "拟一个不超过 14 字的名词短语作为标题，直接输出标题本身，"
+                "不要引号、书名号、句号或任何前后缀说明。")
+
+
+def _flatten_text(blocks: Any, limit: int = 200) -> str:
+    """Anthropic content blocks → 纯文本（只取 text 块，用于摘要输入/输出拼接）"""
+    out = "".join(b.get("text", "") for b in blocks
+                  if isinstance(b, dict) and b.get("type") == "text")
+    return out.strip()[:limit]
 
 
 # ---------------- 基础工具 ----------------
@@ -257,12 +273,14 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db), user: User 
     # 注意：FastAPI ≥0.106 的 Depends(get_db) 会话在流开始消费前即关闭，
     # SSE 生成器内必须自开会话（工具执行与落库都在流内进行）
     return StreamingResponse(
-        _event_stream(job, conv.id, user.id, ctx),
+        _event_stream(job, conv.id, user.id, ctx,
+                      is_first=len(history) == 0, user_text=req.message),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-async def _event_stream(job, conv_id: int, user_id: int, ctx: dict):
+async def _event_stream(job, conv_id: int, user_id: int, ctx: dict,
+                        is_first: bool = False, user_text: str = ""):
     gw = get_assistant_gateway()
     user = await _load_user(user_id)
     # 工具执行贯穿整个流：自开一个会话（请求级 get_db 会话此时已关闭）
@@ -294,6 +312,12 @@ async def _event_stream(job, conv_id: int, user_id: int, ctx: dict):
                     conv_id, job.job_id, evt, user_id, ctx)
                 yield _sse("done", {"conversation_id": str(conv_id), "stop_reason": stop,
                                     "input_tokens": in_tokens, "output_tokens": out_tokens})
+                if is_first and settings.assistant_title_summary:
+                    # 首轮：异步摘要标题，失败静默保留 message[:30] 兜底
+                    t = asyncio.create_task(
+                        _summarize_title(conv_id, user_text, evt.content_json))
+                    _title_tasks.add(t)
+                    t.add_done_callback(_title_tasks.discard)
             elif isinstance(evt, assistant_pb2.ChatError):
                 completed = True  # 节点已收尾，无需再 cancel
                 yield _sse("error", {"message": evt.message})
@@ -332,3 +356,47 @@ async def _persist_assistant(conv_id: int, job_id: str, done, user_id: int, ctx:
             conv.updated_at = datetime.now(timezone.utc)
         await s.commit()
     return done.input_tokens, done.output_tokens, done.stop_reason
+
+
+# ---------------- 会话标题自动摘要（阶段8-B） ----------------
+
+async def _summarize_title(conv_id: int, user_text: str, content_json: str) -> None:
+    """用一次「零工具」ChatJob 让模型拟标题，覆盖 conv.title。
+
+    - tools_json="[]"：节点侧无工具即单轮直出；max_tokens=32 控制成本；
+    - 不写 AssistantMessage、不碰 updated_at → 日配额与列表排序均不受影响；
+    - 60s 硬超时：无空闲节点时排队可能悬挂，超时即放弃；
+    - 任何异常静默 return：截断标题兜底始终可用，用户无感。
+    """
+    try:
+        reply = _flatten_text(json.loads(content_json or "[]"))
+        prompt = f"用户：{user_text[:200]}\n助手：{reply}"
+        job = assistant_pb2.ChatJob(
+            job_id=uuid.uuid4().hex,
+            model=settings.assistant_model,
+            system=TITLE_SYSTEM,
+            messages_json=json.dumps(
+                [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+                ensure_ascii=False),
+            tools_json="[]",
+            max_tokens=32,
+        )
+        title = ""
+        gw = get_assistant_gateway()
+        async with asyncio.timeout(60):
+            async for evt in gw.stream_chat(job):
+                if isinstance(evt, assistant_pb2.ChatDone):
+                    title = _flatten_text(json.loads(evt.content_json or "[]"), 400)
+                    break
+                if isinstance(evt, assistant_pb2.ChatError):
+                    return
+        title = title.strip("“”\"'《》【】「」 　。！!？?，,、\n")
+        if not title:
+            return
+        async with AsyncSessionLocal() as s:
+            conv = await s.get(AssistantConversation, conv_id)
+            if conv is not None:
+                conv.title = title[:24]
+                await s.commit()
+    except Exception as exc:  # noqa: BLE001 摘要失败绝不影响对话主链路
+        logger.info("标题摘要失败 conv=%s: %s", conv_id, exc.__class__.__name__)
