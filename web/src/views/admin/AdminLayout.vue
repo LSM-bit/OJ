@@ -1,6 +1,6 @@
 <!--
   AdminLayout.vue - 管理后台框架
-  左侧菜单（Dashboard/用户/题目/标签/比赛/题单/团队/提交/判题节点）+ 右侧内容区
+  左侧菜单（Dashboard/用户/题目/标签/比赛/题单/团队/提交/判题节点/AI 用量）+ 右侧内容区
   入口控制：仅作为体验层，真正校验在后端 /admin/* 组级 require_admin
 -->
 <template>
@@ -34,6 +34,9 @@
         </el-menu-item>
         <el-menu-item index="/admin/judges">
           <span>判题节点</span>
+        </el-menu-item>
+        <el-menu-item index="/admin/ai-usage">
+          <span>AI 用量</span>
         </el-menu-item>
       </el-menu>
       <div class="admin-back">

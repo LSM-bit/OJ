@@ -15,6 +15,9 @@ from app.database import get_db
 from app.judge_gateway.gen.judge.v1 import judge_pb2
 from app.judge_gateway.server import get_gateway
 from app.models import (
+    AssistantConversation,
+    AssistantMessage,
+    AssistantToolCall,
     CheckIn,
     Contest,
     Playlist,
@@ -493,3 +496,75 @@ async def rejudge_submission(
 async def judges(db: AsyncSession = Depends(get_db)):
     """节点状态聚合：网关快照（节点容量占用 + 等待队列）"""
     return get_gateway().snapshot()
+
+
+# ---------- AI 助手用量看板（阶段8-C） ----------
+
+def _day_key(dt: datetime) -> str:
+    """按 UTC 日历日分桶。SQLite 的 server_default=now 是 naive UTC，PG 是 aware——统一处理"""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
+
+
+@router.get("/ai-usage")
+async def ai_usage(days: int = 14, db: AsyncSession = Depends(get_db)):
+    """AI 助手用量：totals / 按日 daily / 工具分布 tools / Top10 活跃用户。
+
+    按日聚合在 Python 侧分桶——测试库是 SQLite，不能用 date_trunc 等 PG 方言；
+    数据量级（日配额 100/人）下全量拉取窗口内消息无压力。"""
+    days = max(1, min(90, days))
+    now = datetime.now(timezone.utc)
+    since = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
+
+    daily: dict[str, dict] = {}   # date -> {rounds,input_tokens,output_tokens}
+    user_rounds: dict[int, int] = {}
+    rounds = in_tokens = out_tokens = 0
+    rows = list(await db.execute(
+        select(AssistantMessage.role, AssistantMessage.created_at,
+               AssistantMessage.input_tokens, AssistantMessage.output_tokens,
+               AssistantConversation.user_id)
+        .join(AssistantConversation,
+              AssistantMessage.conversation_id == AssistantConversation.id)
+        .where(AssistantMessage.created_at >= since)))
+    for role, created, tin, tout, uid in rows:
+        d = daily.setdefault(_day_key(created),
+                             {"rounds": 0, "input_tokens": 0, "output_tokens": 0})
+        if role == "user":  # 一轮 = 一条 user 消息（与日配额同口径）
+            rounds += 1
+            d["rounds"] += 1
+            user_rounds[uid] = user_rounds.get(uid, 0) + 1
+        else:  # token 用量落在 assistant 行
+            d["input_tokens"] += tin or 0
+            d["output_tokens"] += tout or 0
+            in_tokens += tin or 0
+            out_tokens += tout or 0
+
+    tool_rows = list(await db.execute(
+        select(AssistantToolCall.tool, func.count())
+        .where(AssistantToolCall.created_at >= since)
+        .group_by(AssistantToolCall.tool).order_by(func.count().desc())))
+    tool_calls = sum(c for _, c in tool_rows)
+
+    top_uids = sorted(user_rounds, key=user_rounds.get, reverse=True)[:10]
+    names = {u.id: u.username for u in await db.scalars(
+        select(User).where(User.id.in_(top_uids or {0})))}
+    top_users = [{"user_id": uid, "username": names.get(uid, "?"),
+                  "rounds": user_rounds[uid]} for uid in top_uids]
+
+    # 连续日期补零，前端折线不必处理缺口
+    daily_list = []
+    for i in range(days):
+        key = (since + timedelta(days=i)).strftime("%Y-%m-%d")
+        d = daily.get(key, {"rounds": 0, "input_tokens": 0, "output_tokens": 0})
+        daily_list.append({"date": key, **d})
+
+    return {
+        "totals": {"rounds": rounds, "users": len(user_rounds),
+                   "input_tokens": in_tokens, "output_tokens": out_tokens,
+                   "tool_calls": tool_calls},
+        "daily": daily_list,
+        "tools": [{"tool": t, "count": c} for t, c in tool_rows],
+        "top_users": top_users,
+    }
+

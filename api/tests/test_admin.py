@@ -16,7 +16,7 @@ pytestmark = pytest.mark.asyncio
 async def test_admin_requires_admin(client, normal_user):
     """普通用户访问后台一律 401/403"""
     gets = ["/admin/overview", "/admin/users", "/admin/problems",
-            "/admin/contests", "/admin/judges"]
+            "/admin/contests", "/admin/judges", "/admin/ai-usage"]
     posts = ["/admin/submissions/1/rejudge"]
     puts = [("/admin/users/1/role", {"role": "admin"}),
             ("/admin/users/1/ban", {"banned": True})]
@@ -266,6 +266,92 @@ async def test_judges_snapshot(client, admin_user, gateway):
     assert r.status_code == 200, r.text
     body = r.json()
     assert isinstance(body, dict)
+
+
+# ---------------- AI 用量看板 ----------------
+
+async def test_ai_usage_dashboard(client, admin_user, db_sessionmaker):
+    """按日聚合：totals / daily 补零分桶 / 工具计数 / Top10，窗口外数据不计入"""
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import (AssistantConversation, AssistantMessage,
+                            AssistantToolCall)
+
+    def _u_msg(ts):  # user 行 = 一轮
+        return {"role": "user", "content": [{"type": "text", "text": "q"}],
+                "created_at": ts}
+
+    def _a_msg(ts, tin, tout):
+        return {"role": "assistant", "content": [{"type": "text", "text": "a"}],
+                "input_tokens": tin, "output_tokens": tout, "created_at": ts}
+
+    now = datetime.now(timezone.utc)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    yest = today - timedelta(days=1)
+    # SQLite 存的是 naive UTC，直插用同款口径（_day_key 对两种都兼容）
+    naive = lambda dt: dt.replace(tzinfo=None)  # noqa: E731
+
+    async with db_sessionmaker() as db:
+        ua = await make_user(db, "ai_heavy")
+        ub = await make_user(db, "ai_light")
+        ca = AssistantConversation(user_id=ua.id, title="A", context={})
+        cb = AssistantConversation(user_id=ub.id, title="B", context={})
+        db.add_all([ca, cb])
+        await db.flush()
+
+        # A：昨天 2 轮 + 今天 1 轮；B：今天 1 轮
+        db.add_all([
+            AssistantMessage(conversation_id=ca.id, **_u_msg(naive(yest))),
+            AssistantMessage(conversation_id=ca.id, **_a_msg(naive(yest), 10, 3)),
+            AssistantMessage(conversation_id=ca.id, **_u_msg(naive(yest + timedelta(hours=5)))),
+            AssistantMessage(conversation_id=ca.id, **_a_msg(naive(yest + timedelta(hours=5)), 4, 1)),
+            AssistantMessage(conversation_id=ca.id, **_u_msg(naive(today + timedelta(hours=1)))),
+            AssistantMessage(conversation_id=ca.id, **_a_msg(naive(today + timedelta(hours=1)), 6, 2)),
+            AssistantMessage(conversation_id=cb.id, **_u_msg(naive(today + timedelta(hours=2)))),
+            AssistantMessage(conversation_id=cb.id, **_a_msg(naive(today + timedelta(hours=2)), 7, 9)),
+            # 窗口外（默认 14 天前之外）：不参与任何计数
+            AssistantMessage(conversation_id=ca.id, **_u_msg(naive(today - timedelta(days=40)))),
+            AssistantToolCall(user_id=ua.id, tool="get_problem", conversation_id=ca.id,
+                              created_at=naive(yest)),
+            AssistantToolCall(user_id=ua.id, tool="get_problem", conversation_id=ca.id,
+                              created_at=naive(today)),
+            AssistantToolCall(user_id=ub.id, tool="run_on_sample", conversation_id=cb.id,
+                              created_at=naive(today)),
+            AssistantToolCall(user_id=ua.id, tool="get_hint", conversation_id=ca.id,
+                              created_at=naive(today - timedelta(days=40))),  # 窗口外
+        ])
+        await db.commit()
+
+    h = await auth_header(admin_user)
+    r = await client.get("/admin/ai-usage", headers=h)
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    t = body["totals"]
+    assert t["rounds"] == 4 and t["users"] == 2
+    assert t["input_tokens"] == 27 and t["output_tokens"] == 15
+    assert t["tool_calls"] == 3
+
+    daily = {d["date"]: d for d in body["daily"]}
+    assert len(body["daily"]) == 14          # 连续日期补零
+    yk, tk = naive(yest).strftime("%Y-%m-%d"), naive(today).strftime("%Y-%m-%d")
+    assert daily[yk]["rounds"] == 2 and daily[yk]["input_tokens"] == 14
+    assert daily[tk]["rounds"] == 2 and daily[tk]["output_tokens"] == 11
+    assert daily[naive(today - timedelta(days=3)).strftime("%Y-%m-%d")] == \
+        {"date": naive(today - timedelta(days=3)).strftime("%Y-%m-%d"),
+         "rounds": 0, "input_tokens": 0, "output_tokens": 0}   # 空洞日补零
+
+    assert body["tools"] == [{"tool": "get_problem", "count": 2},
+                             {"tool": "run_on_sample", "count": 1}]
+    top = body["top_users"]
+    assert [(x["username"], x["rounds"]) for x in top] == [("ai_heavy", 3), ("ai_light", 1)]
+
+    # days 参数生效：窗口 1 天只剩今天
+    r = await client.get("/admin/ai-usage?days=1", headers=h)
+    body = r.json()
+    assert len(body["daily"]) == 1 and body["totals"]["rounds"] == 2
+    # 越界钳制不报错（90 上限）
+    assert (await client.get("/admin/ai-usage?days=999", headers=h)).status_code == 200
 
 
 # ---------------- 工具 ----------------
