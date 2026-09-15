@@ -1,0 +1,109 @@
+// OJ AI 助手协议 v1（信息：agent/protos/assistant/v1/assistant.proto；用途：API 网关与 assistant 节点间的 gRPC 契约）
+//
+// 架构：assistant 节点（LLM 中转进程）主动外连 API 端 gRPC 网关（与判题节点同构，穿 NAT）。
+// 节点通过 bidi 流 Connect 注册保活；网关下发 ChatJob；节点逐 token 回传 ChatDelta。
+// 关键边界：工具执行留在 API 侧——节点只见对话文本与工具结果 JSON，零 DB/存储访问。
+// 会话消息与工具入参/结果整体走 JSON 字符串字段（Anthropic blocks 原样），proto 保持稳定。
+
+syntax = "proto3";
+
+package oj.assistant.v1;
+
+// ============ 连接与注册 ============
+
+service AssistantGateway {
+  // 双向流：节点上线后一直挂着，收对话任务、发增量/工具请求/心跳
+  rpc Connect(stream NodeMessage) returns (stream ServerMessage);
+}
+
+message Register {
+  string token = 1;        // 与网关侧配置的 token 列表比对
+  string node_id = 2;      // 留空由网关生成
+  string name = 3;         // 展示名
+  int32 capacity = 4;      // 并发对话容量（同时在飞的 ChatJob 数）
+  string version = 5;      // 节点版本
+}
+
+message RegisterAck {
+  string node_id = 1;
+  int32 heartbeat_interval_seconds = 2;
+}
+
+message Heartbeat {
+  int32 running_tasks = 1;
+}
+
+// ============ 对话任务 ============
+
+// 下发一轮完整对话请求（网关侧已组装好历史与上下文）
+message ChatJob {
+  string job_id = 1;
+  string model = 2;              // 如 claude-sonnet-5
+  string system = 3;             // system prompt（含注入的上下文说明）
+  string messages_json = 4;      // Anthropic messages 数组（user 首条已在网关落库）
+  string tools_json = 5;         // Anthropic tools 声明数组（schema 定义，执行在 API 侧）
+  int32 max_tokens = 6;          // 单次响应上限
+}
+
+message ToolUse {
+  string id = 1;                 // Anthropic tool_use block id
+  string name = 2;
+  string input_json = 3;         // 工具入参 JSON
+}
+
+// 流式增量：文本逐 token 透传；tool_use 在块完成时发一条
+message ChatDelta {
+  string job_id = 1;
+  oneof delta {
+    string text_chunk = 2;
+    ToolUse tool_use = 3;
+    string thinking_chunk = 4;   // 预留：扩展思考增量（一期不下发前端）
+  }
+}
+
+// 整轮结束（含所有 turn 的 assistant content blocks 与用量）
+message ChatDone {
+  string job_id = 1;
+  string content_json = 2;       // 所有轮 assistant content blocks 的 JSON 数组（落库回放用）
+  int32 input_tokens = 3;
+  int32 output_tokens = 4;
+  string stop_reason = 5;        // end_turn / max_tokens / max_turns / timeout
+}
+
+message ChatError {
+  string job_id = 1;
+  string message = 2;            // 面向用户的脱敏错误说明
+}
+
+// 工具执行结果回填（API 侧执行完一个 tool_use 后逐条下发）
+message ToolResult {
+  string job_id = 1;
+  string tool_use_id = 2;
+  string content_json = 3;       // tool_result content（字符串或 blocks 数组）
+  bool is_error = 4;
+}
+
+message CancelChat {
+  string job_id = 1;             // 预留：客户端断开时取消在飞对话
+}
+
+// ============ 信封 ============
+
+message NodeMessage {
+  oneof payload {
+    Register register = 1;
+    Heartbeat heartbeat = 2;
+    ChatDelta delta = 3;
+    ChatDone done = 4;
+    ChatError error = 5;
+  }
+}
+
+message ServerMessage {
+  oneof payload {
+    RegisterAck ack = 1;
+    ChatJob job = 2;
+    ToolResult tool_result = 3;
+    CancelChat cancel = 4;
+  }
+}

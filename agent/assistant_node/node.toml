@@ -1,0 +1,16 @@
+# OJ AI 助手节点配置（与判题节点同构：节点主动外连 API 端 gRPC 网关）
+# 环境变量可覆盖：SERVER_ADDRESS / SERVER_TOKEN / ANTHROPIC_API_KEY
+
+[server]
+address = "127.0.0.1:50052"    # API 端助手网关 gRPC
+token = "dev-assistant-token"
+
+[node]
+id = ""                        # 留空自动生成
+name = ""                      # 展示名，留空用主机名
+capacity = 4                   # 并发对话容量（同时在飞的 ChatJob 数）
+
+[llm]
+default_model = "claude-sonnet-5"
+max_tokens = 4096              # 单次响应上限
+mock = false                   # true = 不调 Anthropic，回显固定文本（联调/自测链路用）

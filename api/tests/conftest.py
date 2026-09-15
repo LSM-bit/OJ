@@ -277,3 +277,58 @@ async def setup_public_problem(client, user, *, title="A+B",
     return p
 
 
+# ---------------- AI 助手网关注入（镜像 judge 的 gateway 夹具手法） ----------------
+
+@pytest_asyncio.fixture()
+async def assistant_gateway(db_sessionmaker, monkeypatch):
+    """向 assistant server 模块注入 AssistantGatewayServicer（无真实 gRPC 服务器）。
+
+    另把 router 模块的 AsyncSessionLocal 指到测试库——SSE 流内自开的会话
+    （工具执行 / assistant 落库 / 重载 user）默认连真实 PG，测试必须重定向。"""
+    from app.assistant_gateway import server as as_server
+    from app.assistant_gateway.gateway import AssistantGatewayServicer
+    import app.routers.assistant as assistant_router
+
+    gw = AssistantGatewayServicer()
+    as_server._gateway = gw
+    monkeypatch.setattr(assistant_router, "AsyncSessionLocal", db_sessionmaker)
+    yield gw
+    as_server._gateway = None
+
+
+def add_fake_assistant_node(gw, node_id: str = "fake-assistant", capacity: int = 4):
+    """注册一个假助手节点：只挂 out_stream 队列，不真正调 LLM"""
+    from app.assistant_gateway.gateway import Node
+
+    node = Node(node_id, "fake", capacity)
+    node.out_stream = asyncio.Queue(64)
+    node.last_seen = asyncio.get_running_loop().time()
+    gw.nodes[node_id] = node
+    return node
+
+
+async def take_assistant_job(node, timeout: float = 2.0):
+    """取网关下发给假节点的 ChatJob（ServerMessage.job）"""
+    msg = await asyncio.wait_for(node.out_stream.get(), timeout)
+    assert msg.HasField("job"), msg
+    return msg.job
+
+
+def push_assistant_events(gw, job, events):
+    """模拟节点上行：按序把 ChatDelta/ChatDone/ChatError 路由进 pending 队列，None 哨兵收尾"""
+    for evt in events:
+        gw._route(job.job_id, evt)
+    gw._route(job.job_id, None)
+
+
+async def take_tool_results(node, count: int, timeout: float = 2.0):
+    """收假节点队列里的 ToolResult 回填消息（工具执行后网关发下的）"""
+    out = []
+    while len(out) < count:
+        msg = await asyncio.wait_for(node.out_stream.get(), timeout)
+        if msg.HasField("tool_result"):
+            out.append(msg.tool_result)
+    return out
+
+
+

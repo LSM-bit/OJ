@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     judge_gateway_tokens: list[str] = ["dev-judge-token"]
     problem_data_dir: str = "./data/problems"  # local 后端的测试数据根目录（pytest 用）
 
+    # AI 助手网关（gRPC，独立进程节点；Anthropic key 只存节点侧，这里不配）
+    assistant_grpc_port: int = 50052
+    assistant_node_tokens: list[str] = ["dev-assistant-token"]
+    assistant_model: str = "claude-sonnet-5"
+    assistant_daily_quota: int = 100          # 每用户每日对话轮数上限
+    assistant_run_sample_quota: int = 20      # run_on_sample 每日次数上限
+
     # JWT
     jwt_secret: str = "dev-secret-change-me"
     jwt_algorithm: str = "HS256"

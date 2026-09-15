@@ -12,8 +12,14 @@
           <span class="s-title">提交 <span class="mono-id" :title="sub.id">#{{ shortId(sub.id) }}</span></span>
           <el-tag :type="statusTag(sub.status)" style="margin-left: 10px">{{ sub.status_label }}</el-tag>
         </div>
-        <el-button v-if="problemId" size="small"
-                   @click="$router.push(`/problems/${problemId}`)">查看题目</el-button>
+        <div>
+          <el-button v-if="userStore.isLoggedIn" size="small" type="primary" plain
+                     @click="askAi">
+            <el-icon style="margin-right:2px"><MagicStick /></el-icon>诊断这次错误
+          </el-button>
+          <el-button v-if="problemId" size="small"
+                     @click="$router.push(`/problems/${problemId}`)">查看题目</el-button>
+        </div>
       </div>
 
       <el-descriptions :column="4" border class="meta">
@@ -60,14 +66,26 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { MagicStick } from '@element-plus/icons-vue'
 import { api } from '../api/client'
 import { shortId } from '../utils/format'
+import { useUserStore } from '../stores/user'
+import { useAssistantStore } from '../stores/assistant'
 import CodeEditor from '../components/CodeEditor.vue'
 
 const route = useRoute()
+const userStore = useUserStore()
+const assistant = useAssistantStore()
 const sub = ref<any>(null)
 const problems = ref<any[]>([])
 const loading = ref(true)
+
+// 「诊断这次错误」：以本次提交为上下文打开助教抽屉（后端 _resolve_context 自动带 problem_id）
+function askAi() {
+  assistant.openWithContext(
+    { type: 'submission', submission_id: sub.value.id },
+    `我这次提交判定为「${sub.value.status_label}」，帮我看看问题出在哪`)
+}
 
 // 旧提交（code 为 NULL/空）展示占位说明
 const codeText = computed(() => (sub.value?.code ? '' : '（旧提交未留存源码）'))

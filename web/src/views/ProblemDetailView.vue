@@ -29,6 +29,11 @@
                       @click.stop="$router.push({ path: '/problems', query: { tag: t } })">
                 {{ t }}
               </el-tag>
+              <!-- AI 助教入口：带题目上下文打开抽屉并预填（组件内自判登录态；登录才显示） -->
+              <el-button v-if="userStore.isLoggedIn" size="small" text class="ask-ai-btn"
+                         @click.stop="askAi">
+                <el-icon style="margin-right:2px"><MagicStick /></el-icon>问 AI
+              </el-button>
             </span>
           </div>
           <div v-show="!descCollapsed" class="pane-body">
@@ -114,15 +119,17 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { CaretLeft, CaretRight, CopyDocument } from '@element-plus/icons-vue'
+import { CaretLeft, CaretRight, CopyDocument, MagicStick } from '@element-plus/icons-vue'
 import md from '../utils/markdown'
 import { api } from '../api/client'
 import { shortId } from '../utils/format'
 import { useUserStore } from '../stores/user'
+import { useAssistantStore } from '../stores/assistant'
 import CodeWorkbench from '../components/CodeWorkbench.vue'
 
 const route = useRoute()
 const userStore = useUserStore()
+const assistant = useAssistantStore()
 const problem = ref<any>(null)
 const loading = ref(true)
 const descCollapsed = ref(false)
@@ -172,6 +179,13 @@ const workbenchRef = ref<InstanceType<typeof CodeWorkbench> | null>(null)
 function copyText(text: string) {
   workbenchRef.value?.setStdin(text ?? '')
   ElMessage.success('已复制到自测运行的标准输入')
+}
+
+// 「问 AI」：以本题为上下文打开助教抽屉（display_id 供后端 _resolve_context 与 get_hint 用）
+function askAi() {
+  assistant.openWithContext(
+    { type: 'problem', problem_id: problem.value.id, display_id: problem.value.display_id },
+    `我想了解 #${problem.value.display_id} ${problem.value.title} 的思路`)
 }
 
 onMounted(async () => {

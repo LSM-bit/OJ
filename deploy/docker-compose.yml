@@ -58,6 +58,19 @@ services:
     privileged: true
     restart: unless-stopped
 
+  # AI 助手节点（LLM 中转，外连 API 助手网关 gRPC :50052；无沙箱需求，非 privileged）
+  # ANTHROPIC_API_KEY 从宿主 .env 注入，绝不写死进 compose/git
+  assistant-node:
+    build:
+      context: ..
+      dockerfile: deploy/assistant-node.Dockerfile
+    environment:
+      SERVER_ADDRESS: "host.docker.internal:50052"
+      SERVER_TOKEN: "dev-assistant-token"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      # ASSISTANT_MOCK: "1"   # 联调/CI：不联网走 mock 回显
+    restart: unless-stopped
+
 volumes:
   pgdata:
   redisdata:

@@ -330,3 +330,44 @@ class CheckIn(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (Index("uq_checkin_user_day", "user_id", "day", unique=True),)
+
+
+class AssistantConversation(Base):
+    """AI 助手会话（docs/AI助手Agent设计.md §3）：context 携带题目/提交上下文"""
+    __tablename__ = "assistant_conversations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, default=snowflake_pk)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    title: Mapped[str] = mapped_column(String(128), default="新对话")  # 一期取首条消息截断
+    # {"type":"problem","problem_id":123} / {"type":"submission","submission_id":45} / {}
+    context: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AssistantMessage(Base):
+    """AI 助手消息：content 为 Anthropic content blocks 原样（含 tool_use/tool_result），供回放与续聊。
+    role='user' 的行同时用于日配额计数（按 created_at 日期 count）"""
+    __tablename__ = "assistant_messages"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, default=snowflake_pk)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("assistant_conversations.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(16))  # user / assistant
+    content: Mapped[list] = mapped_column(JSONB, default=list)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AssistantToolCall(Base):
+    """助手工具调用流水：一期只为 run_on_sample 的日配额计数（按日 count），
+    兼作审计线索（谁在何时用了哪个工具）"""
+    __tablename__ = "assistant_tool_calls"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, default=snowflake_pk)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    tool: Mapped[str] = mapped_column(String(32))
+    conversation_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

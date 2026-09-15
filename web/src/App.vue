@@ -7,6 +7,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from './stores/user'
+import AiAssistant from './components/AiAssistant.vue'
 import { api } from './api/client'
 
 const router = useRouter()
@@ -143,6 +144,8 @@ async function doCheckin() {
       <router-view />
     </el-main>
   </el-container>
+  <!-- AI 助教悬浮球 + 抽屉（全局，登录后可见；组件内自判登录态） -->
+  <AiAssistant />
 </template>
 
 <style scoped>

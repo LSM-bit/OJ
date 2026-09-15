@@ -7,9 +7,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
+from app.assistant_gateway.server import (get_assistant_gateway,
+                                          start_assistant_grpc_server,
+                                          stop_assistant_grpc_server)
 from app.config import settings
 from app.judge_gateway.server import get_gateway, start_grpc_server, stop_grpc_server
-from app.routers import admin, contests, misc, playlists, problems, submissions, teams, users
+from app.routers import (admin, assistant, contests, misc, playlists, problems,
+                         submissions, teams, users)
 from app.services import problem_data
 from app.utils.json_response import BigIdJSONResponse
 
@@ -19,7 +23,9 @@ logging.basicConfig(level=logging.INFO)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await start_grpc_server()
+    await start_assistant_grpc_server()
     yield
+    await stop_assistant_grpc_server()
     await stop_grpc_server()
 
 
@@ -39,6 +45,7 @@ app.include_router(teams.router)
 app.include_router(playlists.router)
 app.include_router(misc.router)
 app.include_router(admin.router)
+app.include_router(assistant.router)
 
 # 用户头像服务：MinIO 读取后经 API 代理下发（URL 保持 /static/avatars/*，前端零改动）
 _AVATAR_CONTENT_TYPES = {"jpg": "image/jpeg", "png": "image/png",

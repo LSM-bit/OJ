@@ -1,0 +1,17 @@
+[project]
+name = "oj-assistant-node"
+version = "0.1.0"
+description = "OJ AI 助手节点（Anthropic 流式中转 + gRPC 客户端；工具执行在 API 侧，本节点零 DB/存储访问）"
+requires-python = ">=3.12"
+dependencies = [
+    "grpcio>=1.83",
+    "protobuf>=7.36",
+    "anthropic>=0.60",
+]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["assistant_node"]
