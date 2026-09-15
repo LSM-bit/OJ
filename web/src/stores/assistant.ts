@@ -13,6 +13,8 @@ export interface ToolTrace {
   label: string
   done: boolean
   isError: boolean
+  /** 工具入参摘要（tool_start 事件下发；回放时取 blocks 里的 input） */
+  args?: Record<string, any>
 }
 
 export interface ChatMsg {
@@ -20,6 +22,10 @@ export interface ChatMsg {
   text: string
   tools: ToolTrace[]
   error?: string
+  /** 流式输出中（光标动画与「思考中」气泡的判定依据） */
+  streaming?: boolean
+  /** 展示时间（回放取 created_at，实时取本地时间），hh:mm */
+  at?: string
 }
 
 export interface ConvItem {
@@ -43,6 +49,13 @@ const TOOL_LABELS: Record<string, string> = {
 function authHeaders(): Record<string, string> {
   const token = localStorage.getItem('oj_token')
   return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+/** 展示时间 hh:mm（回放按本地时区渲染，与 created_at 的 UTC 只差时区偏移，够用） */
+function fmtTime(iso?: string | null): string {
+  const d = iso ? new Date(iso) : new Date()
+  if (Number.isNaN(d.getTime())) return ''
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
 export const useAssistantStore = defineStore('assistant', {
@@ -96,12 +109,22 @@ export const useAssistantStore = defineStore('assistant', {
           const blocks = m.content ?? []
           const text = blocks.filter((b: any) => b.type === 'text')
             .map((b: any) => b.text).join('')
+          // 回放还原真实工具状态：先按 tool_use_id 建 result 映射，
+          // done/isError 不再硬编码（落库 blocks 含 tool_result 块）
+          const resultMap = new Map<string, any>()
+          for (const b of blocks) {
+            if (b.type === 'tool_result') resultMap.set(b.tool_use_id, b)
+          }
           const tools: ToolTrace[] = blocks.filter((b: any) => b.type === 'tool_use')
-            .map((b: any) => ({
-              id: b.id, name: b.name, label: TOOL_LABELS[b.name] ?? `调用 ${b.name}`,
-              done: true, isError: false,
-            }))
-          return { role: m.role, text, tools }
+            .map((b: any) => {
+              const r = resultMap.get(b.id)
+              return {
+                id: b.id, name: b.name, label: TOOL_LABELS[b.name] ?? `调用 ${b.name}`,
+                args: b.input ?? undefined,
+                done: r != null, isError: !!r?.is_error,
+              }
+            })
+          return { role: m.role, text, tools, at: fmtTime(m.created_at) }
         })
       } catch {
         this.messages = []
@@ -126,8 +149,8 @@ export const useAssistantStore = defineStore('assistant', {
       const content = (text ?? this.input).trim()
       if (!content || this.sending) return
       this.input = ''
-      this.messages.push({ role: 'user', text: content, tools: [] })
-      const draft: ChatMsg = { role: 'assistant', text: '', tools: [] }
+      this.messages.push({ role: 'user', text: content, tools: [], at: fmtTime() })
+      const draft: ChatMsg = { role: 'assistant', text: '', tools: [], streaming: true, at: fmtTime() }
       this.messages.push(draft)
       this.sending = true
       const ctrl = new AbortController()
@@ -157,6 +180,7 @@ export const useAssistantStore = defineStore('assistant', {
           draft.error = '连接中断，请重试'
         }
       } finally {
+        draft.streaming = false  // 无论成败/停止/断连，气泡流式光标收尾
         this.sending = false
         this.abort = null
         this.loadConversations()
@@ -216,7 +240,8 @@ export const useAssistantStore = defineStore('assistant', {
           break
         case 'tool_start':
           draft.tools.push({ id: data.id, name: data.name,
-            label: TOOL_LABELS[data.name] ?? `调用 ${data.name}`, done: false, isError: false })
+            label: TOOL_LABELS[data.name] ?? `调用 ${data.name}`,
+            args: data.input ?? undefined, done: false, isError: false })
           break
         case 'tool_result': {
           const t = draft.tools.find((x) => x.id === data.id)
@@ -224,11 +249,13 @@ export const useAssistantStore = defineStore('assistant', {
           break
         }
         case 'done':
+          draft.streaming = false
           if (data.conversation_id != null) this.currentId = String(data.conversation_id)
           if (data.stop_reason === 'max_turns') draft.error = '（本轮工具往返已达上限，请细化问题继续）'
           else if (data.stop_reason === 'timeout') draft.error = '（响应超时，已按当前进度收尾）'
           break
         case 'error':
+          draft.streaming = false
           draft.error = data.message ?? '助手出错'
           break
       }
