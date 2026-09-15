@@ -1,4 +1,4 @@
-"""AI 助手网关 gRPC 服务器生命周期（信息：api/app/assistant_gateway/server.py；用途：挂在 FastAPI lifespan 上起停第二个 gRPC server，端口默认 50052）"""
+"""AI 助手网关 gRPC 服务器生命周期（信息：api/app/assistant_gateway/server.py；用途：挂在 FastAPI lifespan 上起停第二个 gRPC server，端口默认 50060）"""
 
 import logging
 

@@ -131,9 +131,13 @@ class ChatSession:
                     is_error = True
                 finally:
                     self.pending_tools.pop(tu["id"], None)
+                try:
+                    content = json.loads(content_json)
+                except (json.JSONDecodeError, TypeError):
+                    content = content_json or ""  # 非 JSON 时按原文塞给模型，不炸整轮
                 results.append({
                     "type": "tool_result", "tool_use_id": tu["id"],
-                    "content": json.loads(content_json), "is_error": is_error,
+                    "content": content, "is_error": is_error,
                 })
             msgs.append({"role": "user", "content": results})
         else:

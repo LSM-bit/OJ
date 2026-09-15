@@ -58,16 +58,20 @@ services:
     privileged: true
     restart: unless-stopped
 
-  # AI 助手节点（LLM 中转，外连 API 助手网关 gRPC :50052；无沙箱需求，非 privileged）
-  # ANTHROPIC_API_KEY 从宿主 .env 注入，绝不写死进 compose/git
+  # AI 助手节点（LLM 中转，外连 API 助手网关 gRPC :50060；无沙箱需求，非 privileged）
+  # ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL 从宿主 deploy/.env 注入，绝不写死进 compose/git
   assistant-node:
     build:
       context: ..
       dockerfile: deploy/assistant-node.Dockerfile
+    # key/端点经 env_file 直接从 deploy/.env 注入——compose 的 ${VAR} 插值会被
+    # 宿主 shell 同名变量抢先（实测 ANTHROPIC_BASE_URL 被外部代理端点覆盖致 401），
+    # env_file 则完全绕开宿主环境；.env 已被 gitignore，绝不入库
+    env_file:
+      - .env
     environment:
-      SERVER_ADDRESS: "host.docker.internal:50052"
+      SERVER_ADDRESS: "host.docker.internal:50060"
       SERVER_TOKEN: "dev-assistant-token"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       # ASSISTANT_MOCK: "1"   # 联调/CI：不联网走 mock 回显
     restart: unless-stopped
 

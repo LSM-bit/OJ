@@ -16,7 +16,7 @@
 ## 2. 总体架构
 
 > 实施时按既定决策改为**独立节点**（与判题节点同构）：模型 I/O 归 `agent/assistant_node`，
-> 工具执行与权限强制留在 API 侧，两者经内嵌网关以 gRPC 双向流（端口 50052）相连。
+> 工具执行与权限强制留在 API 侧，两者经内嵌网关以 gRPC 双向流（端口 50060，50052 与本机服务冲突后改）相连。
 
 ```
 浏览器 (Vue)
@@ -26,7 +26,7 @@
         ▼
 api/app/routers/assistant.py            ← 比赛禁用(403)/日配额/落库/ChatJob 组装
   ├─ 会话管理（session 表、历史裁剪）
-  ├─ app/assistant_gateway/（gRPC :50052 内嵌 API 进程，逐事件路由）
+  ├─ app/assistant_gateway/（gRPC :50060 内嵌 API 进程，逐事件路由）
   ├─ 工具层 services/assistant_tools.py ← 复用现有 router/service 读数据（API 侧执行）
         │ bidi stream: ChatJob ↓ / ChatDelta·ChatDone ↑ / ToolResult ↓
         ▼
@@ -151,7 +151,7 @@ async for evt in gw.stream_chat(job):      # 节点逐 token 上行，不攒整�
 ## 10. 依赖与配置增量
 
 - `agent/pyproject.toml`（新顶层目录，同 `judge/`）：`grpcio` / `protobuf` / **`anthropic>=0.60`**（官方 SDK，async + 流式 + tool use）——**Anthropic SDK 只在节点侧**，API 侧不新增该依赖
-- `api/app/config.py`：`assistant_grpc_port=50052`、`assistant_node_tokens`（网关节点鉴权）、`assistant_model=claude-sonnet-5`、`assistant_daily_quota=100`、`assistant_run_sample_quota=20`
+- `api/app/config.py`：`assistant_grpc_port=50060`、`assistant_node_tokens`（网关节点鉴权）、`assistant_model=claude-sonnet-5`、`assistant_daily_quota=100`、`assistant_run_sample_quota=20`
 - 节点侧 env：`ANTHROPIC_API_KEY`（仅存节点，不进 API/git）、`SERVER_ADDRESS`/`SERVER_TOKEN`、联调可用 `ASSISTANT_MOCK=1` 走 mock 回显
 - `deploy/docker-compose.yml`：**新增 `assistant-node` 服务**（非 privileged，无沙箱需求），key 从宿主 `.env` 注入
 - 配额一期用 DB 计数（消息表按日 count），不为此引入 Redis 客户端

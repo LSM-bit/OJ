@@ -282,7 +282,10 @@ async def _event_stream(job, conv_id: int, user_id: int, ctx: dict):
                         shown_input = {}
                     yield _sse("tool_start", {"id": tu.id, "name": tu.name, "input": shown_input})
                     content, is_error = await execute_tool(tool_db, user, ctx, tu)
-                    await gw.send_tool_result(job.job_id, tu.id, content, is_error)
+                    # 契约：ToolResult.content_json 是 JSON 串（节点侧 json.loads 重组块），
+                    # execute_tool 返回的是 <tool_data> 裸文本，必须序列化后再回填
+                    await gw.send_tool_result(job.job_id, tu.id,
+                                              json.dumps(content, ensure_ascii=False), is_error)
                     yield _sse("tool_result", {"id": tu.id, "name": tu.name, "is_error": is_error})
                 # thinking_chunk：一期不透传前端（proto 预留）
             elif isinstance(evt, assistant_pb2.ChatDone):

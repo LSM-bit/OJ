@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     problem_data_dir: str = "./data/problems"  # local 后端的测试数据根目录（pytest 用）
 
     # AI 助手网关（gRPC，独立进程节点；Anthropic key 只存节点侧，这里不配）
-    assistant_grpc_port: int = 50052
+    assistant_grpc_port: int = 50060  # 50052 与本机 IncrediBuild LicenseService 冲突，改用 50060
     assistant_node_tokens: list[str] = ["dev-assistant-token"]
     assistant_model: str = "claude-sonnet-5"
     assistant_daily_quota: int = 100          # 每用户每日对话轮数上限

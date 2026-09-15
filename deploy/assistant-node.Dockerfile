@@ -11,7 +11,7 @@ WORKDIR /opt/assistant-node
 COPY agent/assistant_node/ ./assistant_node/
 
 # key/token 由 compose env 注入（ANTHROPIC_API_KEY / SERVER_ADDRESS / SERVER_TOKEN）
-ENV SERVER_ADDRESS="host.docker.internal:50052" \
+ENV SERVER_ADDRESS="host.docker.internal:50060" \
     SERVER_TOKEN="dev-assistant-token"
 
 CMD ["python", "-m", "assistant_node.daemon", "--config", "assistant_node/node.toml"]

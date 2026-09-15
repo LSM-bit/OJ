@@ -280,7 +280,9 @@ async def test_tool_get_problem_never_leaks_solution(client, normal_user, assist
                             _done(jid)])
     tr = await take_tool_results(node, 1)
     assert tr[0].tool_use_id == "toolu_1" and tr[0].is_error is False
-    assert "<tool_data>" in tr[0].content_json
+    # 契约回归：content_json 必须是合法 JSON 串（节点侧 json.loads 组 tool_result 块），
+    # 曾直接回填裸文本导致真节点 JSONDecodeError（2026-09-08 联调发现）
+    assert "<tool_data>" in json.loads(tr[0].content_json)
     assert "SECRET-SOLUTION-CODE" not in tr[0].content_json
     assert "solution_code" not in tr[0].content_json
     # SSE 侧对应 tool_start / tool_result

@@ -2,7 +2,7 @@
 # 环境变量可覆盖：SERVER_ADDRESS / SERVER_TOKEN / ANTHROPIC_API_KEY
 
 [server]
-address = "127.0.0.1:50052"    # API 端助手网关 gRPC
+address = "127.0.0.1:50060"    # API 端助手网关 gRPC
 token = "dev-assistant-token"
 
 [node]
