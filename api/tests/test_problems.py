@@ -1,7 +1,6 @@
 """测试题目模块：创建 / 列表可见性 / 详情 / 数据包上传 / 权限边界"""
 
 import io
-import json
 import zipfile
 
 import pytest
@@ -30,15 +29,11 @@ async def _create_problem(client, user, **kw) -> dict:
     return p
 
 
-def make_zip(manifest: dict | None = None, extra: dict[str, bytes] | None = None) -> bytes:
-    """构造题目数据 zip 包"""
-    if manifest is None:
-        manifest = {"cases": [{"id": "tc0", "score": 50}, {"id": "tc1", "score": 50}]}
-    files = {"manifest.json": json.dumps(manifest).encode(),
-             "cases/tc0.in": b"1 2", "cases/tc0.out": b"3",
-             "cases/tc1.in": b"10 20", "cases/tc1.out": b"30"}
-    if extra:
-        files.update(extra)
+def make_zip(files: dict[str, bytes] | None = None) -> bytes:
+    """构造题目数据 zip 包（只需成对 .in/.out，manifest 由服务端生成）"""
+    if files is None:
+        files = {"tc0.in": b"1 2", "tc0.out": b"3",
+                 "tc1.in": b"10 20", "tc1.out": b"30"}
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         for name, content in files.items():
@@ -142,13 +137,39 @@ async def test_upload_data_and_manifest_sync(client, normal_user):
 
 
 async def test_upload_data_missing_case_file(client, normal_user):
-    """manifest 声明了 tc2 但包里没有 → 400"""
+    """只有 .in 没有配对 .out（或反之）→ 无成对用例，400"""
     p = await _create_problem(client, normal_user)
-    bad_zip = make_zip(manifest={"cases": [{"id": "tc2", "score": 100}]})
+    bad_zip = make_zip({"tc0.in": b"1 2", "tc2.in": b"3 4"})
     r = await client.post(f"/problems/{p['id']}/data",
                           files={"file": ("data.zip", bad_zip, "application/zip")},
                           headers=await auth_header(normal_user))
     assert r.status_code == 400
+
+
+async def test_upload_data_ignores_stray_files(client, normal_user):
+    """新规则：包里不用提供 manifest.json，塞了杂物也只取成对 .in/.out（根目录亦可）"""
+    p = await _create_problem(client, normal_user)
+    zip_bytes = make_zip({
+        "manifest.json": b'{"cases": []}',        # 应被丢弃，分值由服务端生成
+        "readme.txt": b"hello",                    # 非用例文件忽略
+        "tc0.in": b"1 2", "tc0.out": b"3",         # 根目录用例亦可
+        "cases/tc1.in": b"10 20", "cases/tc1.out": b"30",
+    })
+    r = await client.post(f"/problems/{p['id']}/data",
+                          files={"file": ("data.zip", zip_bytes, "application/zip")},
+                          headers=await auth_header(normal_user))
+    assert r.status_code == 200, r.text
+    assert r.json()["cases"] == 2
+
+    from app.services.problem_data import read_file, read_manifest
+
+    manifest = await read_manifest(str(p["id"]), "v1")
+    assert manifest is not None
+    assert [c["id"] for c in manifest["cases"]] == ["tc0", "tc1"]
+    assert sum(c["score"] for c in manifest["cases"]) == 100  # 隐藏用例平分总分
+    # 规范化到 cases/ 前缀下；杂物不进存储
+    assert await read_file(str(p["id"]), "v1", "cases/tc0.in") == b"1 2"
+    assert await read_file(str(p["id"]), "v1", "readme.txt") is None
 
 
 async def test_upload_data_requires_manage_permission(client, normal_user, db_sessionmaker):

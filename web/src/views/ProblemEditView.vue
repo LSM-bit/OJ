@@ -1,7 +1,7 @@
 <!--
   ProblemEditView.vue - 题目创建/编辑页（三步向导）
   第 1 步 题面：基本信息 + Markdown 描述（带预览）
-  第 2 步 样例和用例：上传 zip 数据包 / 手工逐条添加用例，预览输入输出
+  第 2 步 样例和用例：上传 zip 数据包（只需成对 .in/.out）/ 手工逐条添加用例，预览输入输出
   第 3 步 测试：提交标程跑全部用例逐个比对，全部通过后才能发布公开
   创建（第 1 步保存）后才进入第 2/3 步；权限后端强校验
 -->
@@ -148,7 +148,7 @@
       </el-table>
 
       <el-empty v-if="!casesInfo.has_data"
-                description="请添加样例/隐藏用例，或上传 zip 数据包（manifest.json + cases/*.in|*.out）" />
+                description="请添加样例/隐藏用例，或上传 zip 数据包（成对的 *.in + *.out）" />
     </div>
 
     <!-- ===================== 第 3 步：测试 ===================== -->
@@ -254,7 +254,9 @@
     <!-- zip 数据包上传 -->
     <el-dialog v-model="showData" title="上传测试数据 zip 包" width="480">
       <p class="data-hint">
-        zip 包结构：manifest.json + cases/*.in + cases/*.out，上传后整体替换并作废已有验证
+        zip 包里放成对的用例文件 *.in + *.out（可放根目录或 cases/ 子目录），无需 manifest.json——
+        分值与清单由服务端自动生成，文件名以 sample 开头的视为样例（0 分），其余隐藏用例平分 100 分；
+        其他文件自动丢弃。上传后整体替换并作废已有验证
       </p>
       <input type="file" accept=".zip" @change="onFileChange" />
       <el-input v-model="dataVersion" placeholder="数据版本，如 v1" style="margin-top:10px" />

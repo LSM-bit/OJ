@@ -222,9 +222,9 @@ AC_AB_CODE = "s=input().split()\nprint(int(s[0])+int(s[1]))\n"
 
 async def setup_public_problem(client, user, *, title="A+B",
                                cases=None, ac_code=AC_AB_CODE) -> dict:
-    """走完整三步出题流程：创建草稿→传数据→标程验证→发布公开。返回题目 JSON"""
+    """走完整三步出题流程：创建草稿→传数据→标程验证→发布公开。返回题目 JSON
+    数据包只需成对 .in/.out（manifest 由服务端按规则自动生成：非 sample 前缀平分 100 分）"""
     import io
-    import json
     import zipfile
 
     r = await client.post("/problems", json={"title": title, "description": "d"},
@@ -233,15 +233,11 @@ async def setup_public_problem(client, user, *, title="A+B",
     p = r.json()
     if cases is None:
         cases = {"tc0": ("1 2", "3"), "tc1": ("10 20", "30")}
-    manifest = {"cases": [{"id": cid, "score": 50} for cid in cases]}
-    files = {"manifest.json": json.dumps(manifest).encode()}
-    for cid, (i, o) in cases.items():
-        files[f"cases/{cid}.in"] = i.encode()
-        files[f"cases/{cid}.out"] = o.encode()
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        for name, content in files.items():
-            zf.writestr(name, content)
+        for cid, (i, o) in cases.items():
+            zf.writestr(f"{cid}.in", i.encode())
+            zf.writestr(f"{cid}.out", o.encode())
     r = await client.post(f"/problems/{p['id']}/data",
                           files={"file": ("d.zip", buf.getvalue(), "application/zip")},
                           headers=await auth_header(user))

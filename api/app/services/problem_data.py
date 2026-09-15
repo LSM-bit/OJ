@@ -224,6 +224,54 @@ async def write_problem_data(problem_id: str, data_version: str, files: dict[str
     await _store().write(problem_id, data_version, files)
 
 
+def pack_cases(files: dict[str, bytes], sample_ids: set[str] | None = None) -> dict[str, bytes]:
+    """从任意文件字典（.in/.out 可放根目录或 cases/ 子目录）提取成对用例，
+    生成存储格式的完整数据包：{"cases/{stem}.in": ..., "manifest.json": ...}。
+    - 非用例文件（manifest.json/readme 等杂物）一律丢弃——上传方无需提供 json；
+    - 排序用自然序（tc2 在 tc10 前）；
+    - 样例判定：sample_ids 指定则以其为准，否则 stem 以 "sample" 开头视为样例（score=0）；
+    - 隐藏用例平分 100 分，余数补给第一个隐藏用例；全样例时分值均为 0；
+    - 无成对用例抛 ValueError（调用方转 400）。
+    纯函数，同步。"""
+    import re
+
+    def natural_key(stem: str) -> list:
+        return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", stem.lower())]
+
+    ins: dict[str, bytes] = {}
+    outs: dict[str, bytes] = {}
+    for rel, content in files.items():
+        base = rel.rsplit("/", 1)[-1]
+        if base.endswith(".in"):
+            stem, dest = base[:-3], ins
+        elif base.endswith(".out"):
+            stem, dest = base[:-4], outs
+        else:
+            continue
+        if stem and re.fullmatch(r"[\w.\-]+", stem):
+            dest[stem] = content
+    paired = sorted(set(ins) & set(outs), key=natural_key)
+    if not paired:
+        raise ValueError("数据包中没有成对的 .in/.out 用例文件")
+
+    is_sample = ((lambda s: s in sample_ids) if sample_ids is not None
+                 else (lambda s: s.lower().startswith("sample")))
+    hidden = [s for s in paired if not is_sample(s)]
+    packed: dict[str, bytes] = {}
+    manifest_cases = []
+    for s in paired:
+        score = 0 if is_sample(s) else (round(100 / len(hidden)) if hidden else 0)
+        packed[f"cases/{s}.in"] = ins[s]
+        packed[f"cases/{s}.out"] = outs[s]
+        manifest_cases.append({"id": s, "score": score, "sample": is_sample(s)})
+    if hidden:
+        drift = 100 - sum(c["score"] for c in manifest_cases)
+        if drift:
+            manifest_cases[paired.index(hidden[0])]["score"] += drift
+    packed["manifest.json"] = json.dumps({"cases": manifest_cases}, ensure_ascii=False).encode("utf-8")
+    return packed
+
+
 async def append_files(problem_id: str, data_version: str, extra: dict[str, bytes]) -> None:
     """增量覆盖部分文件（追加样例用例时：新 .in/.out + 重写后的 manifest）"""
     merged: dict[str, bytes] = {}

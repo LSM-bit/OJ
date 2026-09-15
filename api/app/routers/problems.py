@@ -2,7 +2,7 @@
 
 三步出题流程（前端向导）：
   1. 题面（基本信息 + Markdown 描述）
-  2. 样例与用例（上传数据包 manifest + cases/*.in|*.out，可单独补传样例）
+  2. 样例与用例（上传 zip：只需 *.in/*.out 成对用例文件，服务端自动配对生成分值；可单独补传样例）
   3. 测试（上传/指定标程，跑全部用例比对，全部通过后才能发布公开）
 """
 
@@ -32,6 +32,7 @@ from app.services.access_deps import ProblemAccess
 from app.services.auth import CurrentUser, ProblemSetter, get_optional_user as get_optional_user_import
 from app.services.problem_data import (
     append_files,
+    pack_cases,
     read_manifest,
     read_text_file,
     write_manifest,
@@ -316,16 +317,19 @@ async def upload_problem_data(
     user: User = CurrentUser,
     p: Problem = Depends(ProblemAccess("manage")),
 ):
-    """上传题目数据 zip 包：manifest.json + cases/*.in + cases/*.out
+    """上传题目数据 zip 包：只需成对的用例文件 *.in + *.out（放 cases/ 子目录或根目录均可）。
+    非用例文件（manifest.json 等杂物）自动丢弃；分值由服务端生成——
+    stem 以 sample 开头视为样例（0 分），其余隐藏用例平分 100 分（余数给第一个）。
+    zip 整体替换当前 data_version。
     权限：资源级管理权（owner/团队队长副队/ADMIN），不要求全局出题人角色"""
     content = await file.read()
     if len(content) > 64 * 1024 * 1024:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "数据包超过 64MB")
-    files = _unzip_to_dict(content)
     try:
-        await write_problem_data(str(p.id), data_version, files)
-    except (KeyError, AssertionError) as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"数据包不合法: {e}") from e
+        files = pack_cases(_unzip_raw(content))
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    await write_problem_data(str(p.id), data_version, files)
     # 同步 testcases 表（判题时按 idx 取分值）；数据变了，验证凭证作废
     case_count = await _sync_testcases_from_manifest(db, p, files)
     p.config = {**p.config, "data_version": data_version,
@@ -334,7 +338,8 @@ async def upload_problem_data(
     return {"ok": True, "files": len(files), "cases": case_count}
 
 
-def _unzip_to_dict(content: bytes) -> dict[str, bytes]:
+def _unzip_raw(content: bytes) -> dict[str, bytes]:
+    """解 zip 为 {zip内路径: 内容}，目录项忽略；坏包转 400"""
     import io
     import zipfile
 
@@ -353,8 +358,8 @@ def _unzip_to_dict(content: bytes) -> dict[str, bytes]:
 # ---------- 三步出题：用例管理 / 标程验证 / 发布 ----------
 
 async def _sync_testcases_from_manifest(db: AsyncSession, p: Problem, files: dict[str, bytes]) -> int:
-    """按 manifest 同步 testcases 表（数据包上传后调用），返回用例数
-    manifest 条目可带 "sample": true 标记样例；zip 整体替换时旧标记作废"""
+    """按（服务端生成的）manifest 同步 testcases 表（数据包上传后调用），返回用例数
+    manifest 条目带 "sample": true 标记样例；zip 整体替换时旧标记作废"""
     old = (await db.scalars(select(Testcase).where(Testcase.problem_id == p.id))).all()
     for r in old:
         await db.delete(r)

@@ -18,21 +18,17 @@ async def _create_draft(client, user, title="用例题") -> dict:
 
 
 async def test_cases_list_after_upload(client, normal_user, gateway):
-    """上传数据后用例列表正确分组（manifest 带 sample 标记）"""
+    """上传数据后用例列表正确分组（stem 以 sample 开头视为样例）"""
     import io
-    import json
     import zipfile
 
     p = await _create_draft(client, normal_user)
-    manifest = {"cases": [{"id": "s0", "score": 0, "sample": True},
-                          {"id": "h0", "score": 100}]}
-    files = {"manifest.json": json.dumps(manifest).encode(),
-             "cases/s0.in": b"1 2", "cases/s0.out": b"3",
-             "cases/h0.in": b"5 5", "cases/h0.out": b"10"}
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        for name, content in files.items():
-            zf.writestr(name, content)
+        zf.writestr("sample0.in", b"1 2")
+        zf.writestr("sample0.out", b"3")
+        zf.writestr("tc0.in", b"5 5")
+        zf.writestr("tc0.out", b"10")
     r = await client.post(f"/problems/{p['id']}/data",
                           files={"file": ("d.zip", buf.getvalue(), "application/zip")},
                           headers=await auth_header(normal_user))
@@ -43,8 +39,8 @@ async def test_cases_list_after_upload(client, normal_user, gateway):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["has_data"] is True
-    assert [s["case_id"] for s in body["samples"]] == ["s0"]
-    assert [c["case_id"] for c in body["cases"]] == ["h0"]
+    assert [s["case_id"] for s in body["samples"]] == ["sample0"]
+    assert [c["case_id"] for c in body["cases"]] == ["tc0"]
 
 
 async def test_add_sample_case(client, normal_user, gateway):
@@ -138,19 +134,15 @@ async def test_unpublish_withdraws_problem(client, normal_user, gateway, db_sess
 async def test_publish_blocked_after_data_change(client, normal_user, gateway):
     """重新上传数据后验证凭证作废，直接发布被拒"""
     import io
-    import json
     import zipfile
 
     p = await setup_public_problem(client, normal_user, title="凭证作废题")
 
     # 重新上传数据（verified_at 被清空）
-    manifest = {"cases": [{"id": "tc0", "score": 100}]}
-    files = {"manifest.json": json.dumps(manifest).encode(),
-             "cases/tc0.in": b"9 9", "cases/tc0.out": b"18"}
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        for name, content in files.items():
-            zf.writestr(name, content)
+        zf.writestr("tc0.in", b"9 9")
+        zf.writestr("tc0.out", b"18")
     r = await client.post(f"/problems/{p['id']}/data",
                           files={"file": ("d.zip", buf.getvalue(), "application/zip")},
                           headers=await auth_header(normal_user))
