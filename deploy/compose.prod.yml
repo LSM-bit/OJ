@@ -1,0 +1,54 @@
+# OJ 生产部署 override：在 base（docker-compose.yml）之上追加 api/web 容器
+# 用法（服务器）: docker compose -f docker-compose.yml -f compose.prod.yml up -d --build
+# compose 合并规则备忘：environment 映射按 key 覆盖（节点 SERVER_ADDRESS 被本文件
+# 覆盖为 api 服务名），ports/env_file 列表拼接；api 不发布任何端口——对外只有 web 的 80
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+    env_file:
+      - api.env          # DATABASE_URL / MINIO_* / JWT_SECRET / 节点令牌 / ADMIN_*
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [ojnet]
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/web.Dockerfile
+      args:
+        VITE_API_BASE: /api
+    ports:
+      - "80:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [ojnet]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 生产：节点直连 api 容器的 gRPC 网关（覆盖 base 的 host.docker.internal）
+  judge-node:
+    environment:
+      SERVER_ADDRESS: api:50051
+    depends_on:
+      api:
+        condition: service_healthy
+
+  assistant-node:
+    environment:
+      SERVER_ADDRESS: api:50060
+    depends_on:
+      api:
+        condition: service_healthy

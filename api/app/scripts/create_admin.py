@@ -1,10 +1,12 @@
 """初始化默认管理员账号（幂等，可重复执行）
 
 用法: .venv/Scripts/python -m app.scripts.create_admin
-默认: Admin0 / Admin0（生产环境务必改掉密码）
+凭据经环境变量 ADMIN_USERNAME / ADMIN_PASSWORD 注入，
+未设置时回退开发默认 Admin0 / Admin0（生产环境务必注入强密码）
 """
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -16,8 +18,8 @@ from app.database import AsyncSessionLocal
 from app.models import User, UserRole
 from app.services.security import hash_password
 
-DEFAULT_ADMIN_USERNAME = "Admin0"
-DEFAULT_ADMIN_PASSWORD = "Admin0"
+DEFAULT_ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "Admin0")
+DEFAULT_ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Admin0")
 
 
 async def create_admin(username: str = DEFAULT_ADMIN_USERNAME,
@@ -42,7 +44,7 @@ async def create_admin(username: str = DEFAULT_ADMIN_USERNAME,
         )
         db.add(admin)
         await db.commit()
-        print(f"默认管理员创建成功: {username} / {password}")
+        print(f"默认管理员创建成功: {username} / ********（密码不回显）")
 
 
 if __name__ == "__main__":

@@ -12,6 +12,20 @@ title OJ Dev Launcher
 
 if "%1"=="stop" goto :stop
 
+rem 密钥文件检查（缺失时提示按模板创建，避免 compose 启动失败）
+set "MISSING_ENV="
+if not exist "%~dp0deploy\api.env"        set "MISSING_ENV=deploy\api.env"
+if not exist "%~dp0deploy\judge-node.env" set "MISSING_ENV=%MISSING_ENV% deploy\judge-node.env"
+if not exist "%~dp0deploy\.env"           set "MISSING_ENV=%MISSING_ENV% deploy\.env"
+if defined MISSING_ENV (
+    echo [错误] 缺少密钥文件: %MISSING_ENV%
+    echo   请复制 deploy\api.env.example 为 deploy\api.env 并填好值；
+    echo   deploy\judge-node.env 内容一行: SERVER_TOKEN=dev-judge-token
+    echo   deploy\.env 至少含: ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL / SERVER_TOKEN=dev-assistant-token
+    pause
+    exit /b 1
+)
+
 echo [1/3] 启动基础设施容器 (postgres / redis / judge-node)...
 docker compose -f "%~dp0deploy\docker-compose.yml" up -d
 if errorlevel 1 (

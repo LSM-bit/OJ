@@ -16,6 +16,11 @@ dist/
 .env.*
 !.env.example
 
+# deploy 下的密钥文件（api.env 等命名不匹配上面的 .env.* 精确模式，必须单独写）
+deploy/.env
+deploy/*.env
+!deploy/*.env.example
+
 # IDE / 系统
 .idea/
 .vscode/

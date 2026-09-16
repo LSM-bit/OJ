@@ -1,18 +1,20 @@
-# OJ 开发环境编排：postgres / redis / go-judge 沙箱
-# api 与 judge 本地直接跑（python venv），生产阶段再容器化
+# OJ 开发环境编排（base）：postgres / redis / minio / judge-node / assistant-node
+# api 在宿主机 venv 跑（HTTP :8000 + 内嵌 gRPC :50051/:50060），节点经 host.docker.internal 外连
+# 生产部署 = 本文件 + compose.prod.yml（override 追加 api/web 容器、节点改连 api 服务名），
+# 服务器上只用: docker compose -f docker-compose.yml -f compose.prod.yml up -d
+# 注意: compose 的 environment 优先级高于 env_file，密钥一律走 env_file 注入（api.env / judge-node.env / .env）
 services:
   postgres:
     image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: oj
-      POSTGRES_PASSWORD: oj_password
-      POSTGRES_DB: oj
+    env_file:
+      - api.env          # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"   # 仅宿主机本机调试；生产不对外
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks: [ojnet]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U oj"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -20,9 +22,10 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redisdata:/data
+    networks: [ojnet]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -32,48 +35,63 @@ services:
   # MinIO 对象存储：题目测试数据（oj-problems）+ 用户头像（oj-avatars）
   minio:
     image: docker.1ms.run/minio/minio:latest
+    # 镜像源说明：国内网络直连 docker.io 常被墙，默认走 1ms.run 代理；
+    # 服务器配了镜像加速器（或海外网络）可改官方: minio/minio:latest
     command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: oju      # MinIO 要求用户名 ≥3 字符
-      MINIO_ROOT_PASSWORD: oj_password
+    env_file:
+      - api.env          # MINIO_ROOT_USER / MINIO_ROOT_PASSWORD
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # Web Console
+      - "127.0.0.1:9000:9000"   # S3 API（仅宿主机本机调试）
+      - "127.0.0.1:9001:9001"   # Web Console（仅宿主机本机调试）
     volumes:
       - miniodata:/data
+    networks: [ojnet]
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  # 判题节点（nsjail 沙箱，主动外连 API 网关 gRPC）
+  # 判题节点（nsjail 沙箱，主动外连 API 网关 gRPC；dev 形态连宿主机 API）
   judge-node:
     build:
       context: ..
       dockerfile: deploy/judge-node.Dockerfile
+    env_file:
+      - judge-node.env  # SERVER_TOKEN（与 api 侧 JUDGE_GATEWAY_TOKENS[0] 一致；dev 值 dev-judge-token）
     environment:
       SERVER_ADDRESS: "host.docker.internal:50051"
-      SERVER_TOKEN: "dev-judge-token"
+    # Linux 上 Docker 引擎（非 Desktop）不解析 host.docker.internal，加映射指向宿主机
+    # host-gateway 是 Docker 20.10+ 内置关键字（自动解析为宿主机 IP）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     privileged: true
+    networks: [ojnet]
     restart: unless-stopped
 
   # AI 助手节点（LLM 中转，外连 API 助手网关 gRPC :50060；无沙箱需求，非 privileged）
-  # ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL 从宿主 deploy/.env 注入，绝不写死进 compose/git
+  # ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL / SERVER_TOKEN 经 env_file 从 deploy/.env 注入，
+  # 绝不写死进 compose/git；.env 已被 gitignore
   assistant-node:
     build:
       context: ..
       dockerfile: deploy/assistant-node.Dockerfile
     # key/端点经 env_file 直接从 deploy/.env 注入——compose 的 ${VAR} 插值会被
     # 宿主 shell 同名变量抢先（实测 ANTHROPIC_BASE_URL 被外部代理端点覆盖致 401），
-    # env_file 则完全绕开宿主环境；.env 已被 gitignore，绝不入库
+    # env_file 则完全绕开宿主环境
     env_file:
-      - .env
+      - .env             # ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL / SERVER_TOKEN
     environment:
       SERVER_ADDRESS: "host.docker.internal:50060"
-      SERVER_TOKEN: "dev-assistant-token"
       # ASSISTANT_MOCK: "1"   # 联调/CI：不联网走 mock 回显
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [ojnet]
     restart: unless-stopped
+
+networks:
+  ojnet:
+    driver: bridge
 
 volumes:
   pgdata:

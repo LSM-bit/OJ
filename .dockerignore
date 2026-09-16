@@ -1,0 +1,33 @@
+# 构建上下文瘦身：api / web / judge-node / assistant-node 四个镜像
+# 都以仓库根为构建上下文，此文件对全部生效（各 Dockerfile 只 COPY 各自子目录）
+# 注意：无此文件时 .venv / node_modules / 日志等会被全量发给 daemon
+
+# VCS / IDE / 文档（镜像不需要）
+.git
+.claude
+.idea
+.vscode
+docs
+*.md
+
+# Python 运行产物
+**/__pycache__
+**/.venv
+**/*.egg-info
+.pytest_cache
+.ruff_cache
+
+# Node（构建阶段各自重新 npm ci）
+**/node_modules
+**/dist
+
+# 日志
+*.log
+
+# 本地爬题数据与工具（生产走 MinIO，不进镜像）
+loj_import/
+api/data/
+
+# 密钥文件绝不进镜像（api.env / judge-node.env 等真实凭据）
+deploy/.env
+deploy/*.env
