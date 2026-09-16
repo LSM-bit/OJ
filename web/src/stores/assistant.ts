@@ -148,8 +148,10 @@ export const useAssistantStore = defineStore('assistant', {
       this.input = ''
       const wasNew = !this.currentId  // 首轮：后端会异步 LLM 摘要标题，稍后要再刷一次列表
       this.messages.push({ role: 'user', text: content, tools: [], at: fmtTime() })
-      const draft: ChatMsg = { role: 'assistant', text: '', tools: [], streaming: true, at: fmtTime() }
-      this.messages.push(draft)
+      this.messages.push({ role: 'assistant', text: '', tools: [], streaming: true, at: fmtTime() })
+      // 必须取数组里的响应式代理来改：push 进去的裸对象直写不触发 Vue 通知，
+      // 流式 text_delta 会一直不可见到 finally 整段刷出（真机 2026-09-16「一次性输出」根因）
+      const draft = this.messages[this.messages.length - 1]
       this.sending = true
       const ctrl = new AbortController()
       this.abort = ctrl
