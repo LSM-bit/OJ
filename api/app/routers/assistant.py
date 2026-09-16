@@ -286,6 +286,8 @@ async def _event_stream(job, conv_id: int, user_id: int, ctx: dict,
     # 工具执行贯穿整个流：自开一个会话（请求级 get_db 会话此时已关闭）
     tool_db = AsyncSessionLocal()
     completed = False
+    # tool_use_id -> is_error：done 时并入落库 blocks，历史回放才能还原失败态
+    tool_states: dict[str, bool] = {}
     try:
         async for evt in gw.stream_chat(job):
             # 网关按 job_id 路由的是内层消息本体（ChatDelta/ChatDone/ChatError），非信封
@@ -300,6 +302,7 @@ async def _event_stream(job, conv_id: int, user_id: int, ctx: dict,
                         shown_input = {}
                     yield _sse("tool_start", {"id": tu.id, "name": tu.name, "input": shown_input})
                     content, is_error = await execute_tool(tool_db, user, ctx, tu)
+                    tool_states[tu.id] = is_error
                     # 契约：ToolResult.content_json 是 JSON 串（节点侧 json.loads 重组块），
                     # execute_tool 返回的是 <tool_data> 裸文本，必须序列化后再回填
                     await gw.send_tool_result(job.job_id, tu.id,
@@ -309,7 +312,7 @@ async def _event_stream(job, conv_id: int, user_id: int, ctx: dict,
             elif isinstance(evt, assistant_pb2.ChatDone):
                 completed = True
                 in_tokens, out_tokens, stop = await _persist_assistant(
-                    conv_id, job.job_id, evt, user_id, ctx)
+                    conv_id, job.job_id, evt, user_id, ctx, tool_states)
                 yield _sse("done", {"conversation_id": str(conv_id), "stop_reason": stop,
                                     "input_tokens": in_tokens, "output_tokens": out_tokens})
                 if is_first and settings.assistant_title_summary:
@@ -342,13 +345,24 @@ async def _load_user(user_id: int) -> User:
     return u
 
 
-async def _persist_assistant(conv_id: int, job_id: str, done, user_id: int, ctx: dict):
-    """assistant 消息落库 + 会话 touch（独立短会话，流内唯一写点）"""
+async def _persist_assistant(conv_id: int, job_id: str, done, user_id: int, ctx: dict,
+                             tool_states: dict[str, bool] | None = None):
+    """assistant 消息落库 + 会话 touch（独立短会话，流内唯一写点）。
+
+    tool_states（tool_use_id → is_error）并入对应 tool_use 块：节点侧只回传
+    assistant blocks，tool_result 在后续 user 消息里、从不落库，历史回放只能
+    靠这里附带的 is_error 还原失败态（缺省视为该轮已结束=成功）。"""
     async with AsyncSessionLocal() as s:
         try:
             blocks = json.loads(done.content_json or "[]")
         except json.JSONDecodeError:
             blocks = [{"type": "text", "text": "（助手返回内容异常）"}]
+        if tool_states:
+            for b in blocks:
+                if isinstance(b, dict) and b.get("type") == "tool_use":
+                    ie = tool_states.get(b.get("id"))
+                    if ie is not None:
+                        b["is_error"] = ie
         s.add(AssistantMessage(conversation_id=conv_id, role="assistant", content=blocks,
                                input_tokens=done.input_tokens, output_tokens=done.output_tokens))
         conv = await s.get(AssistantConversation, conv_id)

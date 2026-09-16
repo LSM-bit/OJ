@@ -109,21 +109,14 @@ export const useAssistantStore = defineStore('assistant', {
           const blocks = m.content ?? []
           const text = blocks.filter((b: any) => b.type === 'text')
             .map((b: any) => b.text).join('')
-          // 回放还原真实工具状态：先按 tool_use_id 建 result 映射，
-          // done/isError 不再硬编码（落库 blocks 含 tool_result 块）
-          const resultMap = new Map<string, any>()
-          for (const b of blocks) {
-            if (b.type === 'tool_result') resultMap.set(b.tool_use_id, b)
-          }
+          // 回放：落库的 assistant 消息必属已结束轮次（tool_result 块不入库，
+          // 失败态由 router 在持久化时并入 tool_use.is_error），done 恒真
           const tools: ToolTrace[] = blocks.filter((b: any) => b.type === 'tool_use')
-            .map((b: any) => {
-              const r = resultMap.get(b.id)
-              return {
-                id: b.id, name: b.name, label: TOOL_LABELS[b.name] ?? `调用 ${b.name}`,
-                args: b.input ?? undefined,
-                done: r != null, isError: !!r?.is_error,
-              }
-            })
+            .map((b: any) => ({
+              id: b.id, name: b.name, label: TOOL_LABELS[b.name] ?? `调用 ${b.name}`,
+              args: b.input ?? undefined,
+              done: true, isError: !!b.is_error,
+            }))
           return { role: m.role, text, tools, at: fmtTime(m.created_at) }
         })
       } catch {

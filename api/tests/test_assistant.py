@@ -16,7 +16,7 @@ from app.assistant_gateway.gen.assistant.v1 import assistant_pb2
 from app.config import settings
 from app.models import (AssistantConversation, AssistantMessage, Contest,
                         ContestParticipant, ContestRule, Problem, Submission,
-                        SubmissionStatus, User)
+                        SubmissionStatus, Testcase, User)
 from app.routers.assistant import _title_tasks
 
 from tests.conftest import (add_fake_assistant_node, auth_header, make_user,
@@ -295,6 +295,62 @@ async def test_tool_get_problem_never_leaks_solution(client, normal_user, assist
     assert "solution_code" not in tr[0].content_json
     # SSE 侧对应 tool_start / tool_result
     assert [e for e, _ in _sse_events(resp.text)] == ["tool_start", "tool_result", "done"]
+
+
+async def test_tool_get_problem_with_testcase_rows_succeeds(client, normal_user, assistant_gateway,
+                                                            db_sessionmaker):
+    """回归（2026-09-16 真机）：样例过滤推导曾误引用外层循环变量 tc，凡有测试点行的题
+    必抛 UnboundLocalError 被泛捕获脱敏成「工具执行失败」。此前用例不插 Testcase 行，
+    空列表推导不求值条件恰好漏网。"""
+    p = await _mk_problem(db_sessionmaker, normal_user)
+    async with db_sessionmaker() as db:
+        db.add(Testcase(problem_id=p.id, idx=0, case_id="sample1",
+                        input_key="cases/sample1.in", output_key="cases/sample1.out",
+                        score=0, is_sample=True))
+        db.add(Testcase(problem_id=p.id, idx=1, case_id="tc1",
+                        input_key="cases/tc1.in", output_key="cases/tc1.out",
+                        score=100, is_sample=False))
+        await db.commit()
+    job, resp, node = await _chat(
+        client, await auth_header(normal_user), assistant_gateway,
+        events=lambda jid: [_delta_tool(jid, tid="toolu_1", name="get_problem",
+                                        args={"display_id": p.display_id}),
+                            _done(jid)])
+    tr = await take_tool_results(node, 1)
+    assert tr[0].is_error is False, tr[0].content_json
+    assert "testcase_count" in json.loads(tr[0].content_json)
+
+
+async def test_tool_state_persisted_for_replay(client, normal_user, assistant_gateway,
+                                               db_sessionmaker):
+    """回放契约（2026-09-16 真机：历史会话工具卡自动展开且无法折叠）：节点侧
+    tool_result 块从不落库，落库时 router 须把 is_error 并入 tool_use 块，
+    前端回放才能把该轮判定为已结束（done=true）并还原失败态。"""
+    p = await _mk_problem(db_sessionmaker, normal_user)
+    blocks = [
+        {"type": "tool_use", "id": "t_ok", "name": "get_problem",
+         "input": {"display_id": p.display_id}},
+        {"type": "tool_use", "id": "t_bad", "name": "get_submission",
+         "input": {"submission_id": "999999"}},
+    ]
+    job, resp, node = await _chat(
+        client, await auth_header(normal_user), assistant_gateway,
+        events=lambda jid: [
+            _delta_tool(jid, tid="t_ok", name="get_problem", args={"display_id": p.display_id}),
+            _delta_tool(jid, tid="t_bad", name="get_submission", args={"submission_id": "999999"}),
+            assistant_pb2.ChatDone(job_id=jid, stop_reason="end_turn",
+                                   input_tokens=1, output_tokens=1,
+                                   content_json=json.dumps(blocks, ensure_ascii=False))])
+    tr = await take_tool_results(node, 2)
+    assert [t.is_error for t in tr] == [False, True]
+    conv_id = int(_sse_events(resp.text)[-1][1]["conversation_id"])
+    async with db_sessionmaker() as db:
+        rows = list(await db.scalars(select(AssistantMessage).where(
+            AssistantMessage.conversation_id == conv_id,
+            AssistantMessage.role == "assistant")))
+    by_id = {b["id"]: b for b in rows[0].content if b.get("type") == "tool_use"}
+    assert by_id["t_ok"]["is_error"] is False
+    assert by_id["t_bad"]["is_error"] is True
 
 
 async def test_tool_denied_for_missing_submission_and_unknown_tools(

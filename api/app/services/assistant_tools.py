@@ -8,6 +8,7 @@
 """
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Coroutine
 
@@ -24,6 +25,8 @@ from app.services import problem_data
 from app.services.access_deps import problem_view_allowed
 
 MAX_RESULT_BYTES = 8 * 1024
+
+logger = logging.getLogger("assistant-tools")
 
 
 class ToolAccessError(Exception):
@@ -107,7 +110,9 @@ async def _t_get_problem(db, user, ctx, args):
     tcs = list(await db.scalars(
         select(Testcase).where(Testcase.problem_id == p.id).order_by(Testcase.idx)))
     samples = []
-    for tc in [t for t in tcs if tc.is_sample][:5]:
+    # 注意：推导条件必须用 t——曾误写 tc（外层循环变量彼时未定义），
+    # 凡有测试点行的题必抛 UnboundLocalError，被泛捕获成脱敏「工具执行失败」（2026-09-16 真机）
+    for tc in [t for t in tcs if t.is_sample][:5]:
         inp = await problem_data.read_text_file(str(p.id), version, tc.input_key, limit=2000) or ""
         out_text = await problem_data.read_text_file(str(p.id), version, tc.output_key, limit=2000) or ""
         samples.append({"input": inp, "output": out_text})
@@ -292,4 +297,6 @@ async def execute_tool(db: AsyncSession, user: User, ctx: dict,
     except ToolAccessError as exc:
         return wrap_tool_data({"error": str(exc)}), True
     except Exception as exc:  # noqa: BLE001 工具内部异常不外泄细节
-        return wrap_tool_data({"error": "工具执行失败"}), True
+        # 回给模型的只留脱敏文案，真实堆栈进服务端日志（曾因此类异常静默吞掉排障无门）
+        logger.exception("工具 %s 执行异常 user=%s args=%s", name, getattr(user, "id", None), args)
+        return wrap_tool_data({"error": f"工具执行失败（{exc.__class__.__name__}）"}), True

@@ -187,6 +187,8 @@ function isOpen(i: number) {
   return toolsOpen[i] ?? false                    // 完成后默认折叠
 }
 function toggleTools(i: number) { toolsOpen[i] = !isOpen(i) }
+// 切换/新建会话时清空展开态（按消息下标记录，跨会话会串台）
+watch(() => store.currentId, () => { for (const k of Object.keys(toolsOpen)) delete toolsOpen[Number(k)] })
 
 /** 入参摘要：首个键值对截 30 字 */
 function argBrief(t: ToolTrace): string {
