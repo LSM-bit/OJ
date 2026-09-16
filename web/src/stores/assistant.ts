@@ -44,6 +44,8 @@ const TOOL_LABELS: Record<string, string> = {
   search_problems: '正在搜索相关题目…',
   get_my_stats: '正在查看你的刷题统计…',
   get_hint: '正在整理提示…',
+  get_problem_full: '正在通读题目与用例数据…',
+  get_problem_stats: '正在核对本作出题数据…',
 }
 
 function authHeaders(): Record<string, string> {

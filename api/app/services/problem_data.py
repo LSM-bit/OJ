@@ -35,6 +35,11 @@ class Store(Protocol):
         """遍历某版本全部文件，产出 (相对路径, 内容)"""
         ...
 
+    async def list_file_sizes(self, problem_id: str, data_version: str) -> dict[str, int]:
+        """列某版本全部文件的 {相对路径: 字节数}——只取元数据，零下载
+        （出题者助手 get_problem_full 的数据强度统计用）"""
+        ...
+
 
 # ---------------- MinIO 后端 ----------------
 
@@ -136,6 +141,17 @@ class MinioStore:
                     resp.release_conn()
             yield key.removeprefix(prefix), await asyncio.to_thread(_get)
 
+    async def list_file_sizes(self, problem_id: str, data_version: str) -> dict[str, int]:
+        import asyncio
+
+        await self._ensure_bucket()
+        prefix = f"{problem_id}-{data_version}/"
+
+        def _sizes() -> dict[str, int]:
+            return {o.object_name.removeprefix(prefix): o.size
+                    for o in self._client.list_objects(self._bucket, prefix=prefix, recursive=True)}
+        return await asyncio.to_thread(_sizes)
+
 
 # ---------------- 本地文件系统后端（pytest / 无 MinIO 环境兜底） ----------------
 
@@ -177,6 +193,17 @@ class LocalStore:
         for file in sorted(root.rglob("*")):
             if file.is_file():
                 yield file.relative_to(root).as_posix(), file.read_bytes()
+
+    async def list_file_sizes(self, problem_id: str, data_version: str) -> dict[str, int]:
+        import asyncio
+
+        def _sizes() -> dict[str, int]:
+            root = self._root(problem_id, data_version)
+            if not root.is_dir():
+                return {}
+            return {f.relative_to(root).as_posix(): f.stat().st_size
+                    for f in sorted(root.rglob("*")) if f.is_file()}
+        return await asyncio.to_thread(_sizes)
 
 
 def _store() -> Store:
@@ -286,6 +313,11 @@ async def iter_problem_data(problem_id: str, data_version: str) -> AsyncIterator
     目录/前缀不存在时产出空。"""
     async for item in _store().iter_all(problem_id, data_version):
         yield item
+
+
+async def list_file_sizes(problem_id: str, data_version: str) -> dict[str, int]:
+    """{相对路径: 字节数}，只读元数据不下载内容。数据不存在返回空 dict。"""
+    return await _store().list_file_sizes(problem_id, data_version)
 
 
 # ---------------- 用户头像（固定走 MinIO；local 后端下同样落 MinIO 桶，见 _avatar_store） ----------------

@@ -157,6 +157,7 @@ const userChar = computed(() => (userStore.user?.username ?? '?')[0].toUpperCase
 const contextLabel = computed(() => {
   const c = store.context
   if (c.type === 'problem' && c.display_id) return `#${c.display_id}`
+  if (c.type === 'problem_review' && c.display_id) return `审校 #${c.display_id}`
   if (c.type === 'submission' && c.submission_id) return '提交诊断'
   return ''
 })
@@ -169,6 +170,7 @@ const quickQuestions = computed(() => {
   ]
   const c = store.context
   if (c.type === 'problem') list.push({ text: '解释这道题的题面', icon: MagicStick })
+  if (c.type === 'problem_review') list.push({ text: '帮我审校这道题', icon: MagicStick })
   if (c.type === 'submission') list.push({ text: '诊断这次提交', icon: Tools })
   return list
 })

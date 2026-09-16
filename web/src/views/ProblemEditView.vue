@@ -10,6 +10,7 @@
     <div class="page-head">
       <h2>{{ isEdit ? `编辑题目 ${detail?.display_id ? '#' + detail.display_id : ''}` : '创建题目' }}</h2>
       <div>
+        <el-button v-if="isEdit" size="small" :icon="MagicStick" @click="aiReview">AI 审校</el-button>
         <el-button v-if="isEdit" size="small" @click="$router.push(`/problems/${pid}`)">查看题目</el-button>
       </div>
     </div>
@@ -297,9 +298,10 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import md from '../utils/markdown'
 import { api } from '../api/client'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, MagicStick } from '@element-plus/icons-vue'
 import CodeWorkbench from '../components/CodeWorkbench.vue'
 import TagPicker from '../components/TagPicker.vue'
+import { useAssistantStore } from '../stores/assistant'
 
 const DIFF = ['', '入门', '简单', '中等', '较难', '困难']
 const diffLabel = (d: number) => DIFF[d] ?? '未知'
@@ -330,6 +332,15 @@ const manageableTeams = computed(() =>
   myTeams.value.filter((t) => ['owner', 'admin'].includes(t.my_role)))
 
 const rendered = computed(() => md.render(form.value.description ?? ''))
+
+// 「AI 审校」：以 problem_review 上下文打开助教抽屉（后端 _resolve_context 校验 can_manage
+// 后才注入审校工具面；pid 保持字符串防雪花精度丢失）
+const assistant = useAssistantStore()
+function aiReview() {
+  assistant.openWithContext(
+    { type: 'problem_review', problem_id: pid.value, display_id: detail.value?.display_id },
+    '请帮我审校这道题：题面、样例、数据强度、时限与难度。')
+}
 
 // 第 2 步：用例信息（samples=题面可见样例；cases=隐藏用例）
 const casesInfo = ref<any>({ samples: [], cases: [], has_data: false, data_version: 'v1', verified_at: null })

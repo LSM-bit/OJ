@@ -434,6 +434,193 @@ async def test_tool_get_hint_with_problem_context_ok(client, normal_user, assist
     assert "当前上下文是一道题" in job.system
 
 
+# ---------------- 出题者审校工具面（阶段8-D） ----------------
+
+async def _mk_review_problem(sm, owner: User, *, description="输入两数求和") -> Problem:
+    """owner 名下带 1 公开样例 + 2 隐藏用例（数据落 local 存储）的题，隐藏内容可辨识。
+    put_example_data 只写文件不建 Testcase 行，故手动插行且 input_key 与其落盘路径一致；
+    put_example_data 只写文件不建 Testcase 行，故手动插行且 input_key 与其落盘路径一致。"""
+    p = await _mk_problem(sm, owner)
+    async with sm() as db:
+        db.add(Testcase(problem_id=p.id, idx=0, case_id="sample1",
+                        input_key="cases/sample1.in", output_key="cases/sample1.out",
+                        score=0, is_sample=True))
+        db.add(Testcase(problem_id=p.id, idx=1, case_id="tc1",
+                        input_key="cases/tc1.in", output_key="cases/tc1.out",
+                        score=60, is_sample=False))
+        db.add(Testcase(problem_id=p.id, idx=2, case_id="tc2",
+                        input_key="cases/tc2.in", output_key="cases/tc2.out",
+                        score=40, is_sample=False))
+        if description != p.description:
+            (await db.get(Problem, p.id)).description = description
+        await db.commit()
+    from app.services import problem_data
+    await problem_data.put_example_data(str(p.id), [
+        ("sample1", "1 2", "3"),
+        ("tc1", "HIDDEN-IN-ONE", "HIDDEN-OUT-ONE"),
+        ("tc2", "HIDDEN-IN-TWO", "HIDDEN-OUT-TWO"),
+    ])
+    return p
+
+
+STUDENT_TOOLS = {"get_problem", "get_submission", "list_case_results",
+                 "run_on_sample", "search_problems", "get_my_stats", "get_hint"}
+
+
+async def test_review_tools_declared_only_for_manageable_problem(client, normal_user,
+                                                                 assistant_gateway,
+                                                                 db_sessionmaker):
+    """声明面即权限边界：owner + problem_review 会话 → 9 工具，system 带出题者段"""
+    p = await _mk_review_problem(db_sessionmaker, normal_user)
+    job, resp, node = await _chat(
+        client, await auth_header(normal_user), assistant_gateway,
+        message="帮我审校这道题",
+        context={"type": "problem_review", "problem_id": p.id})
+    assert resp.status_code == 200
+    names = {t["name"] for t in json.loads(job.tools_json)}
+    assert names == STUDENT_TOOLS | {"get_problem_full", "get_problem_stats"}
+    assert "出题者" in job.system and "get_problem_full" in job.system
+
+
+async def test_review_context_denied_for_other_user(client, normal_user, assistant_gateway,
+                                                    db_sessionmaker):
+    """他人题发同款 context → 静默降级：tools_json 恰为学生 7 工具、无审校 system 段"""
+    async with db_sessionmaker() as db:
+        victim = await make_user(db, "revictim")
+    p = await _mk_problem(db_sessionmaker, victim)
+    job, resp, node = await _chat(
+        client, await auth_header(normal_user), assistant_gateway,
+        message="帮我审校这道题",
+        context={"type": "problem_review", "problem_id": p.id})
+    assert resp.status_code == 200
+    names = {t["name"] for t in json.loads(job.tools_json)}
+    assert names == STUDENT_TOOLS
+    assert "出题者" not in job.system
+
+
+async def test_tool_get_problem_full_owner_sees_stats_not_secrets(client, normal_user,
+                                                                  assistant_gateway,
+                                                                  db_sessionmaker):
+    """owner 审校会话下调 get_problem_full：用例规模统计齐全，
+    但标程、隐藏用例原文一概不外泄（.in/.out 只以字节数聚合出现）"""
+    p = await _mk_review_problem(db_sessionmaker, normal_user)
+    job, resp, node = await _chat(
+        client, await auth_header(normal_user), assistant_gateway,
+        context={"type": "problem_review", "problem_id": p.id},
+        events=lambda jid: [_delta_tool(jid, tid="t1", name="get_problem_full", args={}),
+                            _done(jid)])
+    tr = await take_tool_results(node, 1)
+    assert tr[0].is_error is False, tr[0].content_json
+    raw = json.loads(tr[0].content_json)  # <tool_data>\n{...}\n</tool_data>
+    payload = json.loads(raw.split("<tool_data>\n", 1)[1].rsplit("\n</tool_data>", 1)[0])
+    cs = payload["case_summary"]
+    assert cs["hidden_count"] == 2 and cs["sample_count"] == 1
+    assert cs["score_distribution"] == {"60": 1, "40": 1}
+    sizes = cs["case_file_bytes"]
+    assert sizes["min"] == len("HIDDEN-IN-ONE") and sizes["max"] == len("HIDDEN-OUT-ONE")
+    assert isinstance(sizes["avg"], int)
+    assert payload["samples"] == [{"input": "1 2", "output": "3"}]
+    assert payload["display_id"] == p.display_id and payload["difficulty"] == 2
+    # 泄漏面：标程键与值、隐藏用例内容、逐文件清单
+    assert "SECRET-SOLUTION-CODE" not in tr[0].content_json
+    assert "solution_code" not in tr[0].content_json
+    assert "HIDDEN-IN-ONE" not in tr[0].content_json
+    assert "HIDDEN-OUT-TWO" not in tr[0].content_json
+
+
+async def test_tool_review_hard_fail_without_ctx(client, normal_user, assistant_gateway,
+                                                 db_sessionmaker):
+    """纵深防御：普通会话（无 review ctx）模型硬发审校工具 → handler 层拒绝"""
+    job, resp, node = await _chat(
+        client, await auth_header(normal_user), assistant_gateway,
+        events=lambda jid: [_delta_tool(jid, tid="t1", name="get_problem_full", args={}),
+                            _delta_tool(jid, tid="t2", name="get_problem_stats", args={}),
+                            _done(jid)])
+    tr = await take_tool_results(node, 2)
+    assert [t.is_error for t in tr] == [True, True]
+    for t in tr:
+        assert "审校工具不可用" in t.content_json
+
+
+async def test_tool_review_owner_of_problem_but_ctx_problem(client, normal_user,
+                                                            assistant_gateway, db_sessionmaker):
+    """即便是题主，学生上下文（type=problem）会话也不带 review 标记 → 工具照旧拒绝"""
+    p = await _mk_review_problem(db_sessionmaker, normal_user)
+    job, resp, node = await _chat(
+        client, await auth_header(normal_user), assistant_gateway,
+        context={"type": "problem", "problem_id": p.id},
+        events=lambda jid: [_delta_tool(jid, tid="t1", name="get_problem_full", args={}),
+                            _done(jid)])
+    tr = await take_tool_results(node, 1)
+    assert tr[0].is_error is True and "审校工具不可用" in tr[0].content_json
+
+
+async def test_tool_get_problem_stats_signals(client, normal_user, admin_user,
+                                              assistant_gateway, db_sessionmaker):
+    """作答统计：状态分布/AC率/通过人数/近30天，且高AC率+少用例触发数据强度信号"""
+    p = await _mk_review_problem(db_sessionmaker, normal_user)
+    async with db_sessionmaker() as db:
+        for i in range(10):  # 10 AC（normal_user 6 + admin_user 4）+ 1 WA → ac_rate≈0.909>0.9
+            u = normal_user if i < 6 else admin_user
+            db.add(Submission(user_id=u.id, problem_id=p.id, language="python3.12",
+                              code_key="k", code="print(1)", status=SubmissionStatus.ACCEPTED))
+        db.add(Submission(user_id=normal_user.id, problem_id=p.id, language="python3.12",
+                          code_key="k", code="print(2)", status=SubmissionStatus.WRONG_ANSWER))
+        await db.commit()
+    job, resp, node = await _chat(
+        client, await auth_header(normal_user), assistant_gateway,
+        context={"type": "problem_review", "problem_id": p.id},
+        events=lambda jid: [_delta_tool(jid, tid="t1", name="get_problem_stats", args={}),
+                            _done(jid)])
+    tr = await take_tool_results(node, 1)
+    assert tr[0].is_error is False, tr[0].content_json
+    raw = json.loads(tr[0].content_json)
+    payload = json.loads(raw.split("<tool_data>\n", 1)[1].rsplit("\n</tool_data>", 1)[0])
+    assert payload["total_submissions"] == 11
+    assert payload["by_status"] == {"ac": 10, "wa": 1}
+    assert payload["ac_rate"] == round(10 / 11, 3)
+    assert payload["solvers"] == 2
+    assert payload["recent_30d_submissions"] == 11
+    assert any("数据强度" in s for s in payload["signals"])
+    assert not any("题面歧义" in s for s in payload["signals"])  # WA 未过半
+
+
+async def test_review_chat_still_banned_during_contest(client, normal_user, assistant_gateway,
+                                                       db_sessionmaker):
+    """红线不变：出题者报名了进行中比赛，带审校 context 也进不来（403 在解 ctx 之前）"""
+    p = await _mk_review_problem(db_sessionmaker, normal_user)
+    c = await _mk_contest(db_sessionmaker)
+    await _join(db_sessionmaker, c, normal_user)
+    add_fake_assistant_node(assistant_gateway)
+    r = await client.post("/assistant/chat",
+                          json={"message": "审校", "context": {"type": "problem_review",
+                                                               "problem_id": p.id}},
+                          headers=await auth_header(normal_user))
+    assert r.status_code == 403
+    assert r.json()["detail"]["reason"] == "contest_active"
+
+
+async def test_get_problem_full_long_description_truncated(client, normal_user,
+                                                           assistant_gateway, db_sessionmaker):
+    """7000 字 ASCII 题面：题面层先截 6000 带提示（外层 8KB 包裹兜底不该触发），
+    外层 <tool_data> 完整闭合、统计键仍可达"""
+    p = await _mk_review_problem(db_sessionmaker, normal_user, description="A" * 7000)
+    job, resp, node = await _chat(
+        client, await auth_header(normal_user), assistant_gateway,
+        context={"type": "problem_review", "problem_id": p.id},
+        events=lambda jid: [_delta_tool(jid, tid="t1", name="get_problem_full", args={}),
+                            _done(jid)])
+    tr = await take_tool_results(node, 1)
+    assert tr[0].is_error is False, tr[0].content_json
+    raw = json.loads(tr[0].content_json)
+    assert raw.endswith("</tool_data>")
+    assert "结果已截断" not in raw          # 内层截断先生效，外层 8KB 未触发
+    payload = json.loads(raw.split("<tool_data>\n", 1)[1].rsplit("\n</tool_data>", 1)[0])
+    assert payload["description"].count("A") == 6000
+    assert "题面过长已截断" in payload["description"]
+    assert payload["case_summary"]["hidden_count"] == 2
+
+
 # ---------------- 会话标题自动摘要（阶段8-B） ----------------
 
 async def _drain_title_tasks():

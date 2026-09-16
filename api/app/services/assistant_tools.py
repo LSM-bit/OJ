@@ -1,4 +1,4 @@
-"""AI 助手工具层（信息：api/app/services/assistant_tools.py；用途：注册 7 个只读/自测工具，由 assistant router 在 API 侧执行——节点只见结果 JSON，权限在此处强制）
+"""AI 助手工具层（信息：api/app/services/assistant_tools.py；用途：注册 7 个只读/自测工具与 2 个出题者审校工具，由 assistant router 在 API 侧执行——节点只见结果 JSON，权限在此处强制）
 
 安全红线（docs/AI助手Agent设计.md §5/§7）：
 - 任何工具不返回标程（config.solution_code）、隐藏用例 .in/.out、manifest 分值明细；
@@ -22,6 +22,7 @@ from app.models import (AssistantConversation, AssistantMessage, AssistantToolCa
                         Contest, ContestParticipant, Problem, Submission, SubmissionStatus,
                         Testcase, User, UserRole)
 from app.services import problem_data
+from app.services.access import can_manage
 from app.services.access_deps import problem_view_allowed
 
 MAX_RESULT_BYTES = 8 * 1024
@@ -269,6 +270,107 @@ async def _t_get_hint(db, user, ctx, args):
     return {"source": "generic", "level": level, "hint": ladder[level]}
 
 
+# ============ 出题者审校工具面（阶段8-D，仅编辑页 problem_review 上下文注入） ============
+
+REVIEW_TOOL_SPECS: list[dict] = [
+    {"name": "get_problem_full",
+     "description": "（出题者专用）当前题目的完整审校视图：全文题面、全部样例、隐藏用例的规模统计"
+                    "（数量/分值分布/.in/.out 字节数聚合）。不返回隐藏用例内容与标程。无需入参。",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "get_problem_stats",
+     "description": "（出题者专用）当前题目的作答统计：总提交、状态分布、AC 率、通过人数、近 30 天提交数，"
+                    "并附机械阈值生成的数据质量提示。无需入参。",
+     "input_schema": {"type": "object", "properties": {}}},
+]
+
+
+async def _require_review(db, user, ctx) -> Problem:
+    """审校工具的统一门槛（纵深防御）：声明面已限制入口，这里再验
+    ctx.review 标记 + can_manage 实时权限（防会话存续期间权限变化/直接构造 ctx）"""
+    pid = ctx.get("problem_id")
+    if not (ctx.get("review") and pid):
+        raise ToolAccessError("本题不在你的可管理范围，审校工具不可用")
+    p = await db.get(Problem, pid)
+    if p is None or not await can_manage(db, user, p.owner_type, p.owner_id):
+        raise ToolAccessError("题目不存在或无权管理")
+    return p
+
+
+async def _t_get_problem_full(db, user, ctx, args):
+    p = await _require_review(db, user, ctx)
+    version = p.config.get("data_version", "v1")
+    tcs = list(await db.scalars(
+        select(Testcase).where(Testcase.problem_id == p.id).order_by(Testcase.idx)))
+    desc = p.description or ""
+    desc_truncated = len(desc) > 6000
+    samples = []
+    for tc in [t for t in tcs if t.is_sample][:5]:
+        inp = await problem_data.read_text_file(str(p.id), version, tc.input_key, limit=2000) or ""
+        out_text = await problem_data.read_text_file(str(p.id), version, tc.output_key, limit=2000) or ""
+        samples.append({"input": inp, "output": out_text})
+    # 隐藏用例只给规模统计（数量/分值/文件大小聚合），原文与清单绝不外泄
+    hidden = [t for t in tcs if not t.is_sample]
+    sizes = await problem_data.list_file_sizes(str(p.id), version)
+    case_bytes = [sizes[k] for t in hidden for k in (t.input_key, t.output_key) if k in sizes]
+    score_dist: dict[str, int] = {}
+    for t in hidden:
+        score_dist[str(t.score)] = score_dist.get(str(t.score), 0) + 1
+    case_summary = {
+        "hidden_count": len(hidden),
+        "sample_count": len(tcs) - len(hidden),
+        "score_distribution": score_dist,       # {"分值": 用例数}
+        "case_file_bytes": {
+            "min": min(case_bytes), "max": max(case_bytes),
+            "avg": round(sum(case_bytes) / len(case_bytes)),
+        } if case_bytes else None,
+    }
+    return {
+        "display_id": p.display_id, "title": p.title, "difficulty": p.difficulty,
+        "tags": p.tags, "is_public": p.is_public,
+        "time_limit_ms": p.config.get("time_limit_ms", 2000),
+        "memory_limit_mb": p.config.get("memory_limit_mb", 256),
+        "description": desc[:6000] + ("\n…（题面过长已截断）" if desc_truncated else ""),
+        "samples": samples,
+        "case_summary": case_summary,
+    }
+
+
+async def _t_get_problem_stats(db, user, ctx, args):
+    p = await _require_review(db, user, ctx)
+    rows = (await db.execute(
+        select(Submission.status, func.count()).where(
+            Submission.problem_id == p.id).group_by(Submission.status))).all()
+    # status 是 str 型枚举且值为两字母（"ac"/"wa"）：必须走 execute 拿元组行，
+    # 用 scalars 会得到裸字符串再被 for s, c 拆成单字符（测试真炸过）
+    by_status = {s.value if isinstance(s, SubmissionStatus) else s: c for s, c in rows}
+    total = sum(by_status.values())
+    ac = by_status.get(SubmissionStatus.ACCEPTED.value, 0)
+    wa = by_status.get(SubmissionStatus.WRONG_ANSWER.value, 0)
+    solvers = await db.scalar(
+        select(func.count(func.distinct(Submission.user_id))).where(
+            Submission.problem_id == p.id,
+            Submission.status == SubmissionStatus.ACCEPTED)) or 0
+    since = datetime.now(timezone.utc) - timedelta(days=30)
+    recent = await db.scalar(
+        select(func.count()).select_from(Submission).where(
+            Submission.problem_id == p.id, Submission.submitted_at >= since)) or 0
+    ac_rate = round(ac / total, 3) if total else None
+    # 机械阈值信号：只是启发式提示，判读权留给模型
+    hidden_n = await db.scalar(
+        select(func.count()).select_from(Testcase).where(
+            Testcase.problem_id == p.id, Testcase.is_sample == False)) or 0  # noqa: E712
+    signals = []
+    if total >= 5 and ac_rate is not None and ac_rate > 0.9 and hidden_n < 10:
+        signals.append("AC 率高且隐藏用例少：数据强度可能不足，建议补充边界与大数据用例")
+    if total >= 5 and wa / total > 0.5:
+        signals.append("WA 占比过半：可能存在题面歧义或数据与题意不符")
+    return {
+        "total_submissions": total, "by_status": by_status,
+        "ac_rate": ac_rate, "solvers": solvers, "recent_30d_submissions": recent,
+        "signals": signals,
+    }
+
+
 HANDLERS: dict[str, Callable[..., Coroutine]] = {
     "get_problem": _t_get_problem,
     "get_submission": _t_get_submission,
@@ -277,6 +379,10 @@ HANDLERS: dict[str, Callable[..., Coroutine]] = {
     "search_problems": _t_search_problems,
     "get_my_stats": _t_get_my_stats,
     "get_hint": _t_get_hint,
+    # 审校工具：声明面（TOOL_SPECS）不含它们，学生侧模型根本看不到；
+    # 即便模型幻觉直发工具名，handler 内的 _require_review 也会拒绝
+    "get_problem_full": _t_get_problem_full,
+    "get_problem_stats": _t_get_problem_stats,
 }
 
 
