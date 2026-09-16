@@ -554,11 +554,11 @@ async def test_review_context_denied_for_other_user(client, normal_user, assista
     assert "出题者" not in job.system
 
 
-async def test_tool_get_problem_full_owner_sees_stats_not_secrets(client, normal_user,
-                                                                  assistant_gateway,
-                                                                  db_sessionmaker):
-    """owner 审校会话下调 get_problem_full：用例规模统计齐全，
-    但标程、隐藏用例原文一概不外泄（.in/.out 只以字节数聚合出现）"""
+async def test_tool_get_problem_full_owner_sees_hidden_preview(client, normal_user,
+                                                               assistant_gateway,
+                                                               db_sessionmaker):
+    """owner 审校会话下调 get_problem_full：用例规模统计齐全 + 隐藏用例内容预览
+    （2026-09-16 用户决策开放）；但标程键与值仍绝不外泄"""
     p = await _mk_review_problem(db_sessionmaker, normal_user)
     job, resp, node = await _chat(
         client, await auth_header(normal_user), assistant_gateway,
@@ -577,11 +577,15 @@ async def test_tool_get_problem_full_owner_sees_stats_not_secrets(client, normal
     assert isinstance(sizes["avg"], int)
     assert payload["samples"] == [{"input": "1 2", "output": "3"}]
     assert payload["display_id"] == p.display_id and payload["difficulty"] == 2
-    # 泄漏面：标程键与值、隐藏用例内容、逐文件清单
+    # 隐藏用例内容预览：case_id/分值 + .in/.out 截断文本
+    hc = payload["hidden_cases"]
+    assert [c["case_id"] for c in hc] == ["tc1", "tc2"]
+    assert hc[0] == {"case_id": "tc1", "score": 60,
+                     "input": "HIDDEN-IN-ONE", "output": "HIDDEN-OUT-ONE"}
+    assert hc[1]["input"] == "HIDDEN-IN-TWO" and hc[1]["output"] == "HIDDEN-OUT-TWO"
+    # 泄漏面只剩标程：键与值都不许出现
     assert "SECRET-SOLUTION-CODE" not in tr[0].content_json
     assert "solution_code" not in tr[0].content_json
-    assert "HIDDEN-IN-ONE" not in tr[0].content_json
-    assert "HIDDEN-OUT-TWO" not in tr[0].content_json
 
 
 async def test_tool_review_hard_fail_without_ctx(client, normal_user, assistant_gateway,

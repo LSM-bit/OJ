@@ -1,7 +1,9 @@
 """AI 助手工具层（信息：api/app/services/assistant_tools.py；用途：注册 7 个只读/自测工具与 2 个出题者审校工具，由 assistant router 在 API 侧执行——节点只见结果 JSON，权限在此处强制）
 
 安全红线（docs/AI助手Agent设计.md §5/§7）：
-- 任何工具不返回标程（config.solution_code）、隐藏用例 .in/.out、manifest 分值明细；
+- 学生侧任何工具不返回标程（config.solution_code）、隐藏用例 .in/.out、manifest 分值明细；
+- 唯一例外：出题者审校工具 get_problem_full 可返回当前题目隐藏用例的截断预览
+  （仅限 can_manage 实时校验通过的调用方；标程仍绝不外泄；超大文件只给字节数不拉内容）；
 - handler 第一个业务参数恒为 current_user（由循环注入，模型无法伪造）；
 - 返回值统一 <tool_data> 包裹 + 8KB 截断，题面/代码属不可信注入内容；
 - 越权一律按"不存在"处理（与 access_deps 防枚举口径一致）。
@@ -288,8 +290,9 @@ async def _t_get_hint(db, user, ctx, args):
 
 REVIEW_TOOL_SPECS: list[dict] = [
     {"name": "get_problem_full",
-     "description": "（出题者专用）当前题目的完整审校视图：全文题面、全部样例、隐藏用例的规模统计"
-                    "（数量/分值分布/.in/.out 字节数聚合）。不返回隐藏用例内容与标程。无需入参。",
+     "description": "（出题者专用）当前题目的完整审校视图：全文题面、全部样例、隐藏用例内容预览"
+                    "（每条 .in/.out 截断，超大文件只报字节数）与规模统计（数量/分值分布/字节数聚合）。"
+                    "不返回标程。无需入参。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_problem_stats",
      "description": "（出题者专用）当前题目的作答统计：总提交、状态分布、AC 率、通过人数、近 30 天提交数，"
@@ -310,6 +313,12 @@ async def _require_review(db, user, ctx) -> Problem:
     return p
 
 
+# 隐藏用例预览参数（仅出题者审校面）：多则截断、过大不读，防撑爆 8KB 工具结果包裹
+HIDDEN_PREVIEW_MAX = 8       # 最多预览前 N 条隐藏用例
+HIDDEN_PREVIEW_CHARS = 400   # 每条 .in/.out 截断字符数
+HIDDEN_PREVIEW_FILE_BYTES = 8 * 1024  # 超过此字节数只报大小，不拉内容
+
+
 async def _t_get_problem_full(db, user, ctx, args):
     p = await _require_review(db, user, ctx)
     version = p.config.get("data_version", "v1")
@@ -322,7 +331,8 @@ async def _t_get_problem_full(db, user, ctx, args):
         inp = await problem_data.read_text_file(str(p.id), version, tc.input_key, limit=2000) or ""
         out_text = await problem_data.read_text_file(str(p.id), version, tc.output_key, limit=2000) or ""
         samples.append({"input": inp, "output": out_text})
-    # 隐藏用例只给规模统计（数量/分值/文件大小聚合），原文与清单绝不外泄
+    # 隐藏用例：2026-09-16 用户决策开放内容预览给出题者审校（can_manage 实时校验在 _require_review）
+    # 内容按条截断、超大文件只报字节数；规模统计保留（全量视角，预览只是前几条）
     hidden = [t for t in tcs if not t.is_sample]
     sizes = await problem_data.list_file_sizes(str(p.id), version)
     case_bytes = [sizes[k] for t in hidden for k in (t.input_key, t.output_key) if k in sizes]
@@ -338,6 +348,21 @@ async def _t_get_problem_full(db, user, ctx, args):
             "avg": round(sum(case_bytes) / len(case_bytes)),
         } if case_bytes else None,
     }
+    hidden_preview = []
+    for t in hidden[:HIDDEN_PREVIEW_MAX]:
+        item: dict = {"case_id": t.case_id, "score": t.score}
+        for label, key in (("input", t.input_key), ("output", t.output_key)):
+            size = sizes.get(key, 0)
+            if size > HIDDEN_PREVIEW_FILE_BYTES:
+                item[label] = f"（文件过大，约 {size} 字节，未提供内容预览）"
+                continue
+            text = await problem_data.read_text_file(
+                str(p.id), version, key, limit=HIDDEN_PREVIEW_CHARS)
+            if text is None:
+                item[label] = "（文件缺失）"
+            else:
+                item[label] = text + ("…" if len(text) >= HIDDEN_PREVIEW_CHARS else "")
+        hidden_preview.append(item)
     return {
         "display_id": p.display_id, "title": p.title, "difficulty": p.difficulty,
         "tags": p.tags, "is_public": p.is_public,
@@ -346,6 +371,10 @@ async def _t_get_problem_full(db, user, ctx, args):
         "description": desc[:6000] + ("\n…（题面过长已截断）" if desc_truncated else ""),
         "samples": samples,
         "case_summary": case_summary,
+        "hidden_cases": hidden_preview,
+        "hidden_preview_note": (
+            f"以上为前 {len(hidden_preview)} 条隐藏用例的截断预览"
+            + (f"（共 {len(hidden)} 条，其余未列出）" if len(hidden) > len(hidden_preview) else "")),
     }
 
 
