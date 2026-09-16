@@ -100,11 +100,15 @@ async def _resolve_context(db: AsyncSession, context: dict, user: User) -> dict:
         p = None
         if context.get("problem_id"):
             p = await db.get(Problem, int(context["problem_id"]))
-        elif context.get("display_id"):
+        # 内部 id 查不到时按题号兜底（题被删重导/脏引用场景，此前 if/elif 互斥不会降级）
+        if p is None and context.get("display_id"):
             p = await db.scalar(select(Problem).where(
                 Problem.display_id == int(context["display_id"])))
         if p is not None:
             ctx["problem_id"] = p.id
+            # 带给 system prompt 用：get_problem 只认题号，光给内部 id 模型会拿
+            # URL 里的雪花 id 当题号查导致「查不到」（2026-09-16 真机）
+            ctx["display_id"] = p.display_id
     elif ctype == "problem_review":
         # 审校上下文：仅可管理该题（本人/团队管理职/ADMIN）才注入 review 标记；
         # 否则静默降级为无上下文（不泄露题目存在性）
@@ -113,12 +117,16 @@ async def _resolve_context(db: AsyncSession, context: dict, user: User) -> dict:
         if p is not None and await can_manage(db, user, p.owner_type, p.owner_id):
             ctx["review"] = True
             ctx["problem_id"] = p.id
+            ctx["display_id"] = p.display_id
     elif ctype == "submission":
         sid = context.get("submission_id")
         sub = await db.get(Submission, int(sid)) if sid else None
         if sub is not None:  # 存在性即可注入 ctx；归属权限在工具层与比赛禁用层判
             ctx["submission_id"] = sub.id
             ctx["problem_id"] = sub.problem_id
+            p = await db.get(Problem, sub.problem_id)
+            if p is not None:
+                ctx["display_id"] = p.display_id
             if sub.contest_id:
                 ctx["contest_id"] = sub.contest_id
     return ctx
@@ -171,14 +179,19 @@ def _build_system(ctx: dict) -> str:
     parts = []
     if ctx.get("review"):
         parts.append(
-            "当前用户是这道题的出题者，正在请求审校（内部 id="
-            f"{ctx.get('problem_id')}）。用 get_problem_full 看完整题面与用例规模统计、"
+            "当前用户是这道题的出题者，正在请求审校（题号 display_id="
+            f"{ctx.get('display_id')}）。用 get_problem_full 看完整题面与用例规模统计、"
             "用 get_problem_stats 看作答数据，基于真实数据从五个角度给出审校意见："
             "题面完整性（输入输出格式/数据范围/说明是否齐备）、样例覆盖（是否含边界）、"
             "数据强度（隐藏用例数量与规模分布）、时限合理性、难度与标签匹配度。"
             "结论要具体可执行，指出问题同时给出补充建议。")
     elif ctx.get("problem_id"):
-        parts.append(f"当前上下文是一道题（内部 id={ctx['problem_id']}，可用 get_problem 按题号查看题面与样例）。")
+        # 必须报题号而非内部 id：get_problem 按 display_id 查，模型手里若只有
+        # 雪花 id 就会拿它当题号（2026-09-16 真机「问 AI 查不到题」的根因）
+        parts.append(
+            f"当前上下文是一道题，题号 display_id={ctx.get('display_id')}。"
+            "用户说「这道题」即指它，查题面与样例直接调 get_problem(display_id="
+            f"{ctx.get('display_id')})，不要用其它编号。")
     if ctx.get("submission_id"):
         parts.append(f"当前上下文是一次提交（id={ctx['submission_id']}，可用 get_submission / list_case_results 诊断）。")
     return base + ("\n" + " ".join(parts) if parts else "\n当前无特定题目上下文，可先用 search_problems 定位。")

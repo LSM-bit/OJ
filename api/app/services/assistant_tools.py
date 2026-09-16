@@ -103,8 +103,22 @@ async def _contest_participation(db: AsyncSession, contest_id: int, user_id: int
 
 # ============ 各工具 handler：签名统一 (db, user, ctx, args) -> payload ============
 
+async def _problem_by_display_or_id(db, raw_id) -> Problem | None:
+    """按题号(display_id)查题；查不到再按内部 id 兜底。
+    模型可能把 system/URL 里的雪花 id 误当题号传进来（2026-09-16 真机），
+    display_id 查空后按内部 id 重试一次，口径容错。"""
+    try:
+        rid = int(raw_id)
+    except (TypeError, ValueError):
+        return None
+    p = await db.scalar(select(Problem).where(Problem.display_id == rid))
+    if p is None:
+        p = await db.get(Problem, rid)
+    return p
+
+
 async def _t_get_problem(db, user, ctx, args):
-    p = await db.scalar(select(Problem).where(Problem.display_id == args["display_id"]))
+    p = await _problem_by_display_or_id(db, args["display_id"])
     if p is None or not await problem_view_allowed(db, user, p):
         raise ToolAccessError("题目不存在或不可见")
     version = p.config.get("data_version", "v1")
@@ -160,7 +174,7 @@ async def _t_list_case_results(db, user, ctx, args):
 
 
 async def _t_run_on_sample(db, user, ctx, args):
-    p = await db.scalar(select(Problem).where(Problem.display_id == args["display_id"]))
+    p = await _problem_by_display_or_id(db, args["display_id"])
     if p is None or not await problem_view_allowed(db, user, p):
         raise ToolAccessError("题目不存在或不可见")
     # 设计 §5：比赛进行中该题禁止样例自测（router 入口只拦参赛者，这里兜住任意上下文）

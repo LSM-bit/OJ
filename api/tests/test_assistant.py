@@ -432,6 +432,44 @@ async def test_tool_get_hint_with_problem_context_ok(client, normal_user, assist
     assert tr[0].is_error is False and "hint" in tr[0].content_json
     # system prompt 带上了题目上下文
     assert "当前上下文是一道题" in job.system
+    # 回归（2026-09-16 真机「问 AI 查不到题」）：system 必须给 display_id 而非内部 id——
+    # 模型手里只有雪花 id 时会拿它当题号调 get_problem，必查空
+    assert f"display_id={p.display_id}" in job.system
+
+
+async def test_problem_context_stale_internal_id_falls_back(client, normal_user,
+                                                            assistant_gateway,
+                                                            db_sessionmaker):
+    """题被删重导等场景下 problem_id 失效：旧 if/elif 互斥不会降级按 display_id 查，
+    现要求回退命中（get_hint 有 ctx 才能跑通），system 也带出正确题号"""
+    p = await _mk_problem(db_sessionmaker, normal_user)
+    stale = int(p.id) + 10**15  # 同量级雪花、必不存在
+    job, resp, node = await _chat(
+        client, await auth_header(normal_user), assistant_gateway,
+        context={"type": "problem", "problem_id": str(stale), "display_id": p.display_id},
+        events=lambda jid: [_delta_tool(jid, tid="t1", name="get_hint", args={"level": 1}),
+                            _done(jid)])
+    tr = await take_tool_results(node, 1)
+    assert tr[0].is_error is False
+    assert f"display_id={p.display_id}" in job.system
+
+
+async def test_tool_get_problem_tolerates_internal_id_as_display_id(client, normal_user,
+                                                                    assistant_gateway,
+                                                                    db_sessionmaker):
+    """get_problem 口径容错（2026-09-16 真机）：模型可能把 URL 里的雪花内部 id
+    当题号传进来，display_id 查空后按内部 id 兜底再查一次，不再直接「题目不存在」"""
+    p = await _mk_problem(db_sessionmaker, normal_user)
+    job, resp, node = await _chat(
+        client, await auth_header(normal_user), assistant_gateway,
+        events=lambda jid: [_delta_tool(jid, tid="t1", name="get_problem",
+                                        args={"display_id": p.id}),
+                            _done(jid)])
+    tr = await take_tool_results(node, 1)
+    assert tr[0].is_error is False, tr[0].content_json
+    raw = json.loads(tr[0].content_json)
+    payload = json.loads(raw.split("<tool_data>\n", 1)[1].rsplit("\n</tool_data>", 1)[0])
+    assert payload["display_id"] == p.display_id and payload["title"] == "求和"
 
 
 # ---------------- 出题者审校工具面（阶段8-D） ----------------

@@ -130,6 +130,8 @@ export const useAssistantStore = defineStore('assistant', {
       this.currentId = null
       this.messages = []
       this.input = ''
+      // 新会话必须脱掉题目/提交引用：否则顶栏徽标残留、且首轮又把旧 context 发回去
+      this.context = {}
     },
     async removeConversation(id: string) {
       await api.delete(`/assistant/conversations/${id}`)
