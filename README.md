@@ -21,13 +21,25 @@ web/     前端（Vue3：做题/比赛/题单/团队 + 管理后台 12 页）
 api/     后端 API（FastAPI，9 个路由模块 + 判题网关 :50051 + 助手网关 :50060）
 judge/   判题节点（gRPC 注册/心跳 → nsjail 沙箱执行 → 回写结果）
 agent/   AI 助手节点（tool-use 循环，模型 I/O 中转，零 DB/存储访问）
-deploy/  docker-compose、Dockerfile、nginx、nsjail 配置
+deploy/  docker-compose（dev/prod 双文件）、Dockerfile×4、nginx 配置、密钥模板、nsjail 配置
 docs/    架构设计、权限模型、管理后台、AI 助手 Agent、项目计划等设计文档
 ```
 
 ## 本地开发环境启动
 
 Windows 下一键启动：双击根目录 [run.bat](run.bat)（或命令行执行；`run.bat stop` 停容器）。
+
+首次使用先创建 deploy/ 下的三个密钥文件（均已 gitignore）：
+
+```bash
+cd deploy
+cp api.env.example api.env            # 本机 dev 值即可（Postgres/MinIO 密码 oj_password 等）
+echo "SERVER_TOKEN=dev-judge-token" > judge-node.env
+# .env 至少三行（真实 LLM key 按需）:
+#   ANTHROPIC_API_KEY=...
+#   ANTHROPIC_BASE_URL=...（无中转可省）
+#   SERVER_TOKEN=dev-assistant-token
+```
 
 手动启动：
 
@@ -52,11 +64,30 @@ npm install && npm run dev   # http://localhost:5173
 
 ## 健康检查
 
+本地（dev）：
+
 - API: http://localhost:8000/health
 - go-judge 沙箱: http://localhost:5050/version
-- 判题/助手网关（节点注册状态）: `GET /health` 返回内附，端口 :50051 / :50060 起自 API 进程
+- 判题节点在线数: http://localhost:8000/health/judges（`{"online_nodes":1,...}` 为已注册）
 - MinIO Console: http://localhost:9001（oju / oj_password）
 - 前端: http://localhost:5173
+
+生产（全容器化，唯一入口 nginx :80）：`http://域名/api/health`、`http://域名/api/health/judges`。
+
+## 生产部署
+
+API/前端/基础设施全部容器化 + nginx 同源反代（`/api/` 前缀），详见 [docs/服务器部署手册.md](docs/服务器部署手册.md)：
+
+```bash
+cd deploy
+cp api.env.example api.env   # 填真实密钥（openssl rand -hex 生成，三处一致性见手册）
+# judge-node.env / .env 按模板填好
+docker compose -f docker-compose.yml -f compose.prod.yml up -d --build
+```
+
+要点：对外只暴露 web 容器 80（infra 端口仅 127.0.0.1 绑定）；api 容器 CMD 自带
+`alembic upgrade head`（迁移与重启同批由容器天然保证）；uvicorn **必须单 worker**（gRPC
+网关/节点注册表/雪花 ID 全在进程内）。
 
 ## AI 助手（站内 Agent）
 
