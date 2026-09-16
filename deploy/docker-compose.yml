@@ -33,10 +33,13 @@ services:
       retries: 10
 
   # MinIO 对象存储：题目测试数据（oj-problems）+ 用户头像（oj-avatars）
+  # 镜像源说明：MinIO 已于 2026-09 删除 Docker Hub 上的 minio/minio —— 官方名
+  # minio/minio:latest 必定 denied，配镜像加速器也没用（加速器只是转发 docker.io，
+  # 上游仓库已 404）。改用官方上游 quay.io（本机与服务器实测均可直连且 digest 一致）；
+  # 若某网络拉不动，备选代理缓存：docker.1ms.run/minio/minio:latest 或
+  # docker.m.daocloud.io/minio/minio:latest（改下面 image 行即可）
   minio:
-    image: docker.1ms.run/minio/minio:latest
-    # 镜像源说明：国内网络直连 docker.io 常被墙，默认走 1ms.run 代理；
-    # 服务器配了镜像加速器（或海外网络）可改官方: minio/minio:latest
+    image: quay.io/minio/minio:latest
     command: server /data --console-address ":9001"
     env_file:
       - api.env          # MINIO_ROOT_USER / MINIO_ROOT_PASSWORD
