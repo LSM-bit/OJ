@@ -341,6 +341,9 @@ class AssistantConversation(Base):
     title: Mapped[str] = mapped_column(String(128), default="新对话")  # 一期取首条消息截断
     # {"type":"problem","problem_id":123} / {"type":"submission","submission_id":45} / {}
     context: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # 用户删除 = 软删归档：行与消息全部留存后台（审计/统计口径不变），
+    # 仅从用户列表消失且不可续聊（加载口按 404 处理）
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

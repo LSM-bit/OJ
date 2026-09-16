@@ -130,6 +130,24 @@ async def test_conversation_crud_and_ownership(client, normal_user, admin_user,
     r = await client.get("/assistant/conversations", headers=h)
     assert r.json() == []
 
+    # 归档而非删除：会话行仍在库且 archived=True（后台留存），
+    # 但用户侧 messages 读取与重复删除均按「不存在」404
+    async with db_sessionmaker() as db:
+        msg = AssistantMessage(conversation_id=int(conv["id"]), role="user",
+                               content=[{"type": "text", "text": "留存消息"}])
+        db.add(msg)
+        await db.commit()
+    r = await client.get(f"/assistant/conversations/{conv['id']}/messages", headers=h)
+    assert r.status_code == 404
+    r = await client.delete(f"/assistant/conversations/{conv['id']}", headers=h)
+    assert r.status_code == 404
+    async with db_sessionmaker() as db:
+        row = await db.get(AssistantConversation, int(conv["id"]))
+        assert row is not None and row.archived is True
+        msgs = list(await db.scalars(select(AssistantMessage).where(
+            AssistantMessage.conversation_id == int(conv["id"]))))
+        assert len(msgs) == 1  # 消息级联留存，后台可审计
+
 
 async def test_conversations_require_login(client):
     assert (await client.get("/assistant/conversations")).status_code == 401

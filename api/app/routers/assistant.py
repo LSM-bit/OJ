@@ -84,8 +84,9 @@ def _msg_out(m: AssistantMessage) -> dict:
 
 
 def _owned_or_404(conv: AssistantConversation | None, user: User) -> AssistantConversation:
-    # 越权按"不存在"（与 access_deps 防枚举口径一致）
-    if conv is None or conv.user_id != user.id:
+    # 越权按"不存在"（与 access_deps 防枚举口径一致）；已归档（用户已删除）同样
+    # 按 404——后台留档但前端不可达：续聊、拉消息、重复删除全部走这个加载口
+    if conv is None or conv.user_id != user.id or conv.archived:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "会话不存在")
     return conv
 
@@ -213,7 +214,9 @@ def _history_for_model(messages: list[AssistantMessage]) -> list[dict]:
 @router.get("/conversations")
 async def list_conversations(db: AsyncSession = Depends(get_db), user: User = CurrentUser):
     rows = await db.scalars(
-        select(AssistantConversation).where(AssistantConversation.user_id == user.id)
+        select(AssistantConversation).where(
+            AssistantConversation.user_id == user.id,
+            AssistantConversation.archived == False)  # noqa: E712 用户删=归档，列表不见但行留库
         .order_by(AssistantConversation.updated_at.desc()).limit(50))
     return [_conv_out(c) for c in rows]
 
@@ -246,7 +249,8 @@ async def list_messages(cid: int, db: AsyncSession = Depends(get_db), user: User
 @router.delete("/conversations/{cid}")
 async def delete_conversation(cid: int, db: AsyncSession = Depends(get_db), user: User = CurrentUser):
     conv = await _load_conversation(cid, db, user)
-    await db.delete(conv)  # messages 表 FK 带 CASCADE
+    # 软删归档：行与 messages 全留存（后台可审计/统计），列表与续聊经 archived 过滤不可达
+    conv.archived = True
     await db.commit()
     return {"ok": True}
 
