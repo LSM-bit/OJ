@@ -262,7 +262,8 @@ async function submit() {
   cursor: pointer;
 }
 .pane-left.collapsed .title-text,
-.pane-left.collapsed .el-tag {
+.pane-left.collapsed .el-tag,
+.pane-left.collapsed .ask-ai-btn {
   display: none;
 }
 .pane-title { cursor: pointer; }
