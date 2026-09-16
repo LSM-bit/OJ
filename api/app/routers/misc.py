@@ -4,6 +4,7 @@
 打卡：登录用户每日一次，返回连续打卡天数与累计天数
 """
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -23,6 +24,12 @@ class AnnouncementCreate(BaseModel):
     title: str = Field(min_length=1, max_length=128)
     content: str = ""
     top: bool = False
+
+
+class AnnouncementUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    content: Optional[str] = None
+    top: Optional[bool] = None
 
 
 def _ann_out(a: Announcement) -> dict:
@@ -54,6 +61,28 @@ async def create_announcement(
 ):
     a = Announcement(title=req.title, content=req.content, top=req.top, author_id=user.id)
     db.add(a)
+    await db.commit()
+    await db.refresh(a)
+    return _ann_out(a)
+
+
+@router.put("/announcements/{announcement_id}")
+async def update_announcement(
+    announcement_id: int,
+    req: AnnouncementUpdate,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_admin),
+):
+    """编辑公告：标题/正文/置顶，按需局部更新（只覆盖显式传入的字段）"""
+    a = await db.get(Announcement, announcement_id)
+    if a is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "公告不存在")
+    if req.title is not None:
+        a.title = req.title
+    if req.content is not None:
+        a.content = req.content
+    if req.top is not None:
+        a.top = req.top
     await db.commit()
     await db.refresh(a)
     return _ann_out(a)

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # 文件: api/tests/test_admin.py
-# 用途: 管理后台接口测试：权限边界/概况统计/用户管理/题目管理/标签管理/单条重判/节点监控
+# 用途: 管理后台接口测试：权限边界/概况统计/用户管理/题目管理/标签管理/单条重判/节点监控/公告管理
 
 import pytest
 from httpx import AsyncClient
@@ -352,6 +352,54 @@ async def test_ai_usage_dashboard(client, admin_user, db_sessionmaker):
     assert len(body["daily"]) == 1 and body["totals"]["rounds"] == 2
     # 越界钳制不报错（90 上限）
     assert (await client.get("/admin/ai-usage?days=999", headers=h)).status_code == 200
+
+
+# ---------------- 公告管理 ----------------
+
+async def test_announcement_crud(client, normal_user, admin_user):
+    """管理员发布/编辑/置顶/删除；普通用户无写权；未登录可读"""
+    # 普通用户发布 → 403
+    r = await client.post("/misc/announcements", json={"title": "x"},
+                          headers=await auth_header(normal_user))
+    assert r.status_code in (401, 403)
+
+    # 管理员发布（置顶）
+    r = await client.post("/misc/announcements",
+                          json={"title": "系统维护", "content": "今晚 8 点", "top": True},
+                          headers=await auth_header(admin_user))
+    assert r.status_code == 201, r.text
+    aid = r.json()["id"]
+    assert r.json()["top"] is True
+
+    # 未登录可读列表
+    r = await client.get("/misc/announcements")
+    assert r.status_code == 200
+    assert any(a["id"] == aid for a in r.json())
+
+    # 编辑：改标题与取消置顶
+    r = await client.put(f"/misc/announcements/{aid}",
+                         json={"title": "系统维护（改期）", "top": False},
+                         headers=await auth_header(admin_user))
+    assert r.status_code == 200, r.text
+    assert r.json()["title"] == "系统维护（改期）" and r.json()["top"] is False
+    assert r.json()["content"] == "今晚 8 点"          # 未传字段保持原值
+
+    # 普通用户编辑/删除 → 403
+    for method, call in (("put", client.put(f"/misc/announcements/{aid}", json={"top": True},
+                                            headers=await auth_header(normal_user))),
+                         ("delete", client.delete(f"/misc/announcements/{aid}",
+                                                  headers=await auth_header(normal_user)))):
+        r = await call
+        assert r.status_code in (401, 403), method
+
+    # 删除后列表不可见；再删/再编辑 404
+    r = await client.delete(f"/misc/announcements/{aid}", headers=await auth_header(admin_user))
+    assert r.status_code == 200
+    assert all(a["id"] != aid for a in (await client.get("/misc/announcements")).json())
+    assert (await client.put(f"/misc/announcements/{aid}", json={"top": True},
+                             headers=await auth_header(admin_user))).status_code == 404
+    assert (await client.delete(f"/misc/announcements/{aid}",
+                                headers=await auth_header(admin_user))).status_code == 404
 
 
 # ---------------- 工具 ----------------
