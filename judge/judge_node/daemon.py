@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 import grpc
+import redis.asyncio as aioredis
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -38,14 +39,11 @@ STATUS_HIGHEST_SEVERITY = (
 RECONNECT_BASE_SECONDS = 1.0
 RECONNECT_MAX_SECONDS = 30.0
 
-# Redis Stream 配置
-from app.services.judge_queue import (
-    STREAM_JUDGE_QUEUE, STREAM_JUDGE_RUN, GROUP_JUDGE,
-    judge_queue, init_judge_queue, close_judge_queue,
-)
-
-# Redis 配置从环境变量读取
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+# Redis Stream key 常量（与 api/app/services/judge_queue.py 保持一致）
+STREAM_JUDGE_QUEUE = "oj:judge:queue"
+STREAM_JUDGE_RUN = "oj:judge:run"
+STREAM_JUDGE_RESULTS = "oj:judge:results"
+GROUP_JUDGE = "judge-nodes"
 
 
 def aggregate_status(statuses: list[str]) -> str:
@@ -65,14 +63,25 @@ class NodeDaemon:
         self.cache = ProblemDataCache(Path(cfg.paths.data_cache))
         self.semaphore = asyncio.Semaphore(cfg.node.capacity)
         self.running_tasks = 0
-        self.backoff = RECONNECT_BASE_SECONDS  # 当前重连退避时长
+        self.backoff = RECONNECT_BASE_SECONDS
         self.node_id = cfg.node.id or f"{cfg.node.name or 'node'}-{os.urandom(4).hex()}"
+        self.redis: aioredis.Redis | None = None
+        self.grpc_stub: judge_pb2_grpc.JudgeGatewayStub | None = None
 
     async def run(self):
-        """主循环：连接 → 服务 → 断开后指数退避重连（1s→2s→4s...封顶 30s）"""
-        # 初始化 Redis 连接
-        judge_queue.redis_url = REDIS_URL
-        await init_judge_queue()
+        """主循环：连接 → 服务 → 断开后指数退避重连"""
+        redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+        self.redis = aioredis.from_url(redis_url, decode_responses=True, max_connections=5)
+        # 确保 consumer group 存在
+        for stream, group in [
+            (STREAM_JUDGE_QUEUE, GROUP_JUDGE),
+            (STREAM_JUDGE_RUN, GROUP_JUDGE),
+        ]:
+            try:
+                await self.redis.xgroup_create(stream, group, id="0", mkstream=True)
+            except Exception:  # noqa: BLE001 BUSYGROUP
+                pass
+        log.info("Redis 连接建立: %s", redis_url)
 
         try:
             while True:
@@ -81,17 +90,18 @@ class NodeDaemon:
                 except grpc.aio.AioRpcError as e:
                     log.error("连接断开: %s，%.0fs 后重连",
                               e.code(), min(self.backoff, RECONNECT_MAX_SECONDS))
-                except Exception:  # noqa: BLE001 未知异常也退避重连，避免进程退出
+                except Exception:  # noqa: BLE001
                     log.exception("节点运行异常，%.0fs 后重连",
                                   min(self.backoff, RECONNECT_MAX_SECONDS))
                 await asyncio.sleep(min(self.backoff, RECONNECT_MAX_SECONDS))
                 self.backoff = min(self.backoff * 2, RECONNECT_MAX_SECONDS)
         finally:
-            await close_judge_queue()
+            if self.redis:
+                await self.redis.close()
 
     async def _run_once(self):
         channel = grpc.aio.insecure_channel(self.cfg.server.address)
-        stub = judge_pb2_grpc.JudgeGatewayStub(channel)
+        self.grpc_stub = judge_pb2_grpc.JudgeGatewayStub(channel)
         self.outbox: asyncio.Queue = asyncio.Queue(64)
 
         async def request_gen():
@@ -108,16 +118,15 @@ class NodeDaemon:
                     return
                 yield msg
 
-        heartbeat_task = asyncio.create_task(self._heartbeat_loop(stub))
-        # Redis Stream 任务拉取 loop
+        heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         poll_task = asyncio.create_task(self._poll_jobs())
         log.info("连接网关 %s ...", self.cfg.server.address)
         try:
-            async for server_msg in stub.Connect(request_gen()):
+            async for server_msg in self.grpc_stub.Connect(request_gen()):
                 if server_msg.HasField("ack"):
                     log.info("注册成功 node_id=%s 心跳=%ss",
                              server_msg.ack.node_id, server_msg.ack.heartbeat_interval_seconds)
-                    self.backoff = RECONNECT_BASE_SECONDS  # 曾成功注册 → 重置退避
+                    self.backoff = RECONNECT_BASE_SECONDS
         finally:
             poll_task.cancel()
             heartbeat_task.cancel()
@@ -125,45 +134,89 @@ class NodeDaemon:
                 await poll_task
                 await heartbeat_task
 
-    async def _heartbeat_loop(self, stub):
+    async def _heartbeat_loop(self):
         while True:
             await asyncio.sleep(10)
             await self.outbox.put(judge_pb2.NodeMessage(heartbeat=judge_pb2.Heartbeat(
                 running_tasks=self.running_tasks)))
+
+    # ---------- Redis Stream 任务拉取 ----------
 
     async def _poll_jobs(self):
         """从 Redis Stream 轮询判题/自测任务"""
         log.info("开始从 Redis Stream 拉取任务")
         while True:
             try:
-                # 先拉判题任务，再拉自测任务
-                judge_jobs = await judge_queue.claim_judge(
-                    consumer_id=self.node_id,
-                    timeout_ms=2000,
-                    count=1,
-                )
+                # 先尝试投递该 consumer 的 pending 消息（断连重连场景）
+                judge_jobs = await self._claim_jobs(STREAM_JUDGE_QUEUE, timeout_ms=2000)
                 if judge_jobs:
                     msg_id, job = judge_jobs[0]
                     await self._execute_redis_job(msg_id, job)
                     continue
 
-                run_jobs = await judge_queue.claim_run(
-                    consumer_id=self.node_id,
-                    timeout_ms=1000,
-                    count=1,
-                )
+                run_jobs = await self._claim_jobs(STREAM_JUDGE_RUN, timeout_ms=1000)
                 if run_jobs:
                     msg_id, job = run_jobs[0]
                     await self._execute_redis_run_code(msg_id, job)
                     continue
 
-                # 无任务时短暂休眠
                 await asyncio.sleep(0.5)
             except asyncio.CancelledError:
                 break
             except Exception:  # noqa: BLE001
                 log.exception("任务拉取异常")
                 await asyncio.sleep(1)
+
+    async def _claim_jobs(self, stream: str, timeout_ms: int = 2000, count: int = 1):
+        """从 Redis Stream 拉取任务，先检查 pending 再拉新消息"""
+        # 检查 pending（超时 30s 未 ACK 的）
+        try:
+            pending = await self.redis.xpending_range(
+                stream, GROUP_JUDGE, min="-", max="+", count=count, consumername=self.node_id
+            )
+            if pending:
+                old_ids = [
+                    p["message_id"] for p in pending
+                    if p["time_since_delivered"] > 30000
+                ]
+                if old_ids:
+                    claimed = await self.redis.xclaim(
+                        stream, GROUP_JUDGE, self.node_id, min_idle_time=0, message_ids=old_ids
+                    )
+                    result = []
+                    for msg_id, fields in claimed:
+                        if fields:
+                            job = json.loads(fields.get("data", "{}"))
+                            result.append((msg_id, job))
+                    if result:
+                        return result
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 拉取新消息
+        resp = await self.redis.xreadgroup(
+            GROUP_JUDGE, self.node_id, {stream: ">"},
+            count=count, block=timeout_ms,
+        )
+        if not resp:
+            return []
+        result = []
+        for _stream, messages in resp:
+            for msg_id, fields in messages:
+                job = json.loads(fields.get("data", "{}"))
+                result.append((msg_id, job))
+        return result
+
+    async def _ack(self, stream: str, msg_id: str):
+        """ACK 任务完成"""
+        await self.redis.xack(stream, GROUP_JUDGE, msg_id)
+
+    async def _publish_result(self, result: dict):
+        """发布结果到结果 Stream"""
+        await self.redis.xadd(
+            STREAM_JUDGE_RESULTS,
+            {"data": json.dumps(result, ensure_ascii=False)},
+        )
 
     # ---------- 判题 ----------
 
@@ -173,17 +226,17 @@ class NodeDaemon:
             self.running_tasks += 1
             try:
                 result = await self._judge_inner(job)
-                # ACK 任务完成
-                await judge_queue.ack_judge(msg_id)
+                await self._ack(STREAM_JUDGE_QUEUE, msg_id)
             except Exception as exc:  # noqa: BLE001
                 log.exception("作业异常 submission=%s", job.get("submission_id"))
                 result = {"submission_id": job.get("submission_id"), "status": "system_error",
                           "error_message": f"node error: {exc}"[:2000], "cases": []}
-                # ACK 即使失败也 ACK，避免无限重投
-                await judge_queue.ack_judge(msg_id)
+                await self._ack(STREAM_JUDGE_QUEUE, msg_id)
             finally:
                 self.running_tasks -= 1
+            # 通过 gRPC 回传结果 + 发布到 Redis 结果 Stream
             await self.outbox.put(_result_message(result))
+            await self._publish_result(result)
             log.info("判题完成 %s → %s", job.get("submission_id"), result["status"])
 
     async def _judge_inner(self, job: dict) -> dict:
@@ -202,7 +255,6 @@ class NodeDaemon:
             cases.append(JudgeCase(language=job["language"], source=job["code"],
                                    stdin=stdin, expected=expected, limits=limits,
                                    case_id=tc["test_case_id"], score=tc["score"]))
-        # 判题为阻塞进程等待，移出事件循环线程
         results = await asyncio.to_thread(self.worker.execute_cases, cases,
                                           stop_on_failure=job.get("stop_on_failure", True))
 
@@ -228,18 +280,18 @@ class NodeDaemon:
                 "error_message": error_message, "cases": case_results}
 
     async def _ensure_data(self, job: dict) -> Path:
-        """节点本地缓存命中直接用；否则从网关流式拉取"""
-        # 题目数据从 gRPC 网关拉取（大文件不走 Redis）
-        if self.cache.has(job["problem_id"], job["data_version"]):
-            return self.cache.dir_for(job["problem_id"], job["data_version"])
+        """节点本地缓存命中直接用；否则从网关 gRPC 流式拉取"""
+        problem_id = job["problem_id"]
+        data_version = job["data_version"]
+        if self.cache.has(problem_id, data_version):
+            return self.cache.dir_for(problem_id, data_version)
 
-        # 需要从网关拉取（这里简化处理，实际需要 gRPC stub）
-        # 由于节点不再在 Connect 中接收任务，需要额外发起 FetchProblemData 调用
-        raise NotImplementedError(
-            "从 Redis 消费任务时拉取题目数据需要额外实现。"
-            "建议使用独立的 gRPC 通道调用 FetchProblemData，"
-            "或在任务中包含测试数据（不推荐，消息体过大）。"
-        )
+        # 通过 gRPC FetchProblemData 拉取
+        metadata = (("x-node-token", self.cfg.server.token),)
+        call = self.grpc_stub.FetchProblemData(
+            judge_pb2.ProblemDataRequest(problem_id=problem_id, data_version=data_version),
+            metadata=metadata)
+        return await self.cache.sync(problem_id, data_version, call)
 
     # ---------- 用户自测 ----------
 
@@ -254,21 +306,32 @@ class NodeDaemon:
                     output_limit_kb=job["limits"].get("output_limit_kb", 1024))
                 result = await asyncio.to_thread(
                     self.worker.run_code, job["language"], job["code"],
-                    job.get("input", ""), limits)
-                await judge_queue.ack_run(msg_id)
+                    job.get("input", "").encode(), limits)
+                await self._ack(STREAM_JUDGE_RUN, msg_id)
             except Exception as exc:  # noqa: BLE001
                 log.exception("自测异常 request=%s", job.get("request_id"))
                 result = {"status": "system_error", "output": b"",
                           "error_message": f"node error: {exc}"[:2000]}
-                await judge_queue.ack_run(msg_id)
+                await self._ack(STREAM_JUDGE_RUN, msg_id)
             finally:
                 self.running_tasks -= 1
-        await self.outbox.put(judge_pb2.NodeMessage(run_code_result=judge_pb2.RunCodeResult(
+
+        # 通过 gRPC 回传 + 发布到 Redis 结果 Stream
+        run_result = judge_pb2.RunCodeResult(
             request_id=job.get("request_id"), status=result["status"],
             output=result["output"] if isinstance(result["output"], bytes) else result["output"].encode(),
             error_message=result.get("error_message", ""),
             time_used_ms=result.get("time_used_ms", 0),
-            memory_used_kb=result.get("memory_used_kb", 0))))
+            memory_used_kb=result.get("memory_used_kb", 0))
+        await self.outbox.put(judge_pb2.NodeMessage(run_code_result=run_result))
+        await self._publish_result({
+            "request_id": job.get("request_id"),
+            "status": result["status"],
+            "output": result["output"].decode("utf-8", errors="replace") if isinstance(result["output"], bytes) else result.get("output", ""),
+            "error_message": result.get("error_message", ""),
+            "time_used_ms": result.get("time_used_ms", 0),
+            "memory_used_kb": result.get("memory_used_kb", 0),
+        })
 
 
 def _result_message(result: dict) -> judge_pb2.NodeMessage:
