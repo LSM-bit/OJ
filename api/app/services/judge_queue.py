@@ -18,6 +18,7 @@ import os
 from typing import Any
 
 import redis.asyncio as redis
+from redis.exceptions import ResponseError as RedisResponseError
 
 from app.config import settings
 
@@ -68,7 +69,7 @@ class JudgeQueue:
                 await self._redis.xgroup_create(
                     stream, group, id="0", mkstream=True
                 )
-            except redis.exceptions.ResponseError as e:
+            except RedisResponseError as e:
                 if "BUSYGROUP" not in str(e):
                     raise
 

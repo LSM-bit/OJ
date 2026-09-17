@@ -128,11 +128,12 @@ class NodeDaemon:
                              server_msg.ack.node_id, server_msg.ack.heartbeat_interval_seconds)
                     self.backoff = RECONNECT_BASE_SECONDS
         finally:
-            poll_task.cancel()
-            heartbeat_task.cancel()
-            async with contextlib.suppress(asyncio.CancelledError):
-                await poll_task
-                await heartbeat_task
+            for task in (poll_task, heartbeat_task):
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
     async def _heartbeat_loop(self):
         while True:
@@ -252,7 +253,7 @@ class NodeDaemon:
         for tc in job.get("cases", []):
             stdin = (data_dir / "cases" / f"{tc['test_case_id']}.in").read_bytes()
             expected = (data_dir / "cases" / f"{tc['test_case_id']}.out").read_bytes()
-            cases.append(JudgeCase(language=job["language"], source=job["code"],
+            cases.append(JudgeCase(language=job["language"], source=job["code"].encode(),
                                    stdin=stdin, expected=expected, limits=limits,
                                    case_id=tc["test_case_id"], score=tc["score"]))
         results = await asyncio.to_thread(self.worker.execute_cases, cases,
@@ -305,7 +306,7 @@ class NodeDaemon:
                     memory_limit_mb=job["limits"].get("memory_limit_mb", 256),
                     output_limit_kb=job["limits"].get("output_limit_kb", 1024))
                 result = await asyncio.to_thread(
-                    self.worker.run_code, job["language"], job["code"],
+                    self.worker.run_code, job["language"], job["code"].encode(),
                     job.get("input", "").encode(), limits)
                 await self._ack(STREAM_JUDGE_RUN, msg_id)
             except Exception as exc:  # noqa: BLE001
