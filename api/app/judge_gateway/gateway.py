@@ -25,6 +25,26 @@ from app.services.judge_queue import judge_queue
 logger = logging.getLogger("judge-gateway")
 
 
+class Judged(dict):
+    """判题/自测结果：兼容 dict 下标与属性访问（结果源自 Redis JSON，均为 dict）"""
+    def __init__(self, data=None):
+        super().__init__()
+        if data:
+            for k, v in data.items():
+                if isinstance(v, dict):
+                    self[k] = Judged(v)
+                elif isinstance(v, list):
+                    self[k] = [Judged(x) if isinstance(x, dict) else x for x in v]
+                else:
+                    self[k] = v
+
+    def __getattr__(self, item):
+        try:
+            return self[item]
+        except KeyError:
+            raise AttributeError(item) from None
+
+
 class Node:
     """判题节点状态"""
     def __init__(self, node_id: str, name: str, capacity: int):
@@ -144,7 +164,7 @@ class JudgeGatewayServicer(judge_pb2_grpc.JudgeGatewayServicer):
         submission_id = result.get("submission_id")
         fut = self.pending.pop(submission_id, None)
         if fut and not fut.done():
-            fut.set_result(result)
+            fut.set_result(Judged(result))
         elif fut is None and self.result_sink:
             # 主动推送模式的结果（重判等），交给上层落库
             asyncio.get_running_loop().create_task(self.result_sink(result))
@@ -154,7 +174,7 @@ class JudgeGatewayServicer(judge_pb2_grpc.JudgeGatewayServicer):
         request_id = rc.get("request_id")
         fut = self.pending.pop(request_id, None)
         if fut and not fut.done():
-            fut.set_result(rc)
+            fut.set_result(Judged(rc))
 
     async def _result_consumer_loop(self) -> None:
         """后台消费结果 Stream"""

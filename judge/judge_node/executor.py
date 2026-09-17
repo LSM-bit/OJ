@@ -174,6 +174,9 @@ class JudgeWorker:
             # /tmp 与作业目录可写（-B = bind rw）；根目录其余部分按 cfg 只读
             "--bindmount", "/tmp",
             "--bindmount", str(cwd),
+            # 沙箱内进程工作目录必须是可写作业目录：g++/运行时会往 CWD 写临时文件，
+            # 若不指定 --cwd，nsjail 默认落在只读的 chroot 根 "/" → 编译直接 SIGSEGV
+            "--cwd", str(cwd),
             "--time_limit", str(max(1, (limits.time_limit_ms + 999) // 1000)),
             "--rlimit_as", str(limits.memory_limit_mb),
             "--rlimit_fsize", str(limits.output_limit_kb),

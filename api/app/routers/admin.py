@@ -461,7 +461,10 @@ async def rejudge_submission(
         code=s.code.encode(),
         limits=judge_pb2.ResourceLimits(
             time_limit_ms=p.config.get("time_limit_ms", 2000),
-            memory_limit_mb=p.config.get("memory_limit_mb", 256)),
+            memory_limit_mb=p.config.get("memory_limit_mb", 256),
+            output_limit_kb=p.config.get("output_limit_kb", 1024),
+            process_limit=p.config.get("process_limit", 32),
+        ),
         problem_id=str(p.id),
         data_version=data_version,
         cases=[judge_pb2.TestCase(test_case_id=tc.case_id, score=tc.score) for tc in tcs],
@@ -475,15 +478,15 @@ async def rejudge_submission(
         await db.commit()
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"重判失败: {e}") from e
 
-    s.status = NODE_STATUS_MAP.get(result.status, SubmissionStatus.SYSTEM_ERROR)
-    s.score = result.score
-    s.time_ms = result.time_used_ms
-    s.memory_kb = result.memory_used_kb
+    s.status = NODE_STATUS_MAP.get(result["status"], SubmissionStatus.SYSTEM_ERROR)
+    s.score = result["score"]
+    s.time_ms = result["time_used_ms"]
+    s.memory_kb = result["memory_used_kb"]
     s.detail = {
-        "cases": [{"idx": i, "status": c.status,
-                   "time_used_ms": c.time_used_ms, "memory_used_kb": c.memory_used_kb}
-                  for i, c in enumerate(result.cases)],
-        "error_message": result.error_message,
+        "cases": [{"idx": i, "status": c["status"],
+                   "time_used_ms": c["time_used_ms"], "memory_used_kb": c["memory_used_kb"]}
+                  for i, c in enumerate(result["cases"])],
+        "error_message": result["error_message"],
     }
     await db.commit()
     return {"ok": True, "status": s.status.value,

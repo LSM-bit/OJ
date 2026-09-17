@@ -257,8 +257,9 @@ class NodeDaemon:
         limits = ResourceLimits(
             time_limit_ms=job["limits"].get("time_limit_ms", 2000),
             memory_limit_mb=job["limits"].get("memory_limit_mb", 256),
-            output_limit_kb=job["limits"].get("output_limit_kb", 1024),
-            process_limit=job["limits"].get("process_limit", 32),
+            # 上游 proto 未传时为 0，不能当有效值（rlimit_fsize=0 会导致无法写文件/编译失败）
+            output_limit_kb=job["limits"].get("output_limit_kb") or 1024,
+            process_limit=job["limits"].get("process_limit") or 32,
         )
         cases = []
         for tc in job.get("cases", []):
@@ -315,7 +316,9 @@ class NodeDaemon:
                 limits = ResourceLimits(
                     time_limit_ms=job["limits"].get("time_limit_ms", 5000),
                     memory_limit_mb=job["limits"].get("memory_limit_mb", 256),
-                    output_limit_kb=job["limits"].get("output_limit_kb", 1024))
+                    output_limit_kb=job["limits"].get("output_limit_kb") or 1024,
+                    process_limit=job["limits"].get("process_limit") or 32,
+                )
                 result = await asyncio.to_thread(
                     self.worker.run_code, job["language"], job["code"].encode(),
                     job.get("input", "").encode(), limits)

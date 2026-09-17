@@ -134,6 +134,8 @@ async def create_submission(
         limits=judge_pb2.ResourceLimits(
             time_limit_ms=p.config.get("time_limit_ms", 2000),
             memory_limit_mb=p.config.get("memory_limit_mb", 256),
+            output_limit_kb=p.config.get("output_limit_kb", 1024),
+            process_limit=p.config.get("process_limit", 32),
         ),
         problem_id=str(p.id),
         data_version=data_version,
@@ -146,15 +148,15 @@ async def create_submission(
     gw = get_gateway()
     result = await gw.submit(job, timeout=120)
 
-    sub.status = NODE_STATUS_MAP.get(result.status, SubmissionStatus.SYSTEM_ERROR)
-    sub.score = result.score
-    sub.time_ms = result.time_used_ms
-    sub.memory_kb = result.memory_used_kb
+    sub.status = NODE_STATUS_MAP.get(result["status"], SubmissionStatus.SYSTEM_ERROR)
+    sub.score = result["score"]
+    sub.time_ms = result["time_used_ms"]
+    sub.memory_kb = result["memory_used_kb"]
     sub.detail = {
-        "cases": [{"idx": i, "status": c.status,
-                   "time_used_ms": c.time_used_ms, "memory_used_kb": c.memory_used_kb}
-                  for i, c in enumerate(result.cases)],
-        "error_message": result.error_message,
+        "cases": [{"idx": i, "status": c["status"],
+                   "time_used_ms": c["time_used_ms"], "memory_used_kb": c["memory_used_kb"]}
+                  for i, c in enumerate(result["cases"])],
+        "error_message": result["error_message"],
     }
     await db.commit()
     return _to_out(sub)
@@ -199,7 +201,8 @@ async def run_code(
     return {
         "status": result.status,
         "status_label": RUN_STATUS_LABEL.get(result.status, result.status),
-        "output": result.output.decode("utf-8", errors="replace"),
+        "output": result.output if isinstance(result.output, str)
+                  else result.output.decode("utf-8", errors="replace"),
         "error_message": result.error_message,
         "time_used_ms": result.time_used_ms,
         "memory_used_kb": result.memory_used_kb,
