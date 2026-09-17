@@ -195,9 +195,31 @@ class JudgeWorker:
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         out_buf: list[bytes] = []
         err_buf: list[bytes] = []
+        max_capture = limits.output_limit_kb * 1024
+        overflow = threading.Event()
+
+        def _pump(stream, sink: list) -> None:
+            # 限量读取：rlimit_fsize 只限写文件、不限管道，死循环打印会在时限内
+            # 向管道灌 GB 级输出，read() 全量缓冲会把节点守护进程自己撑爆（OOM）。
+            # 超过输出上限立即 kill nsjail——它是 PID namespace 的 init，
+            # 内核会随之 SIGKILL 沙箱内全部子进程，管道随即 EOF，读完即可返回。
+            total = 0
+            while True:
+                chunk = stream.read1(65536)
+                if not chunk:
+                    break
+                sink.append(chunk)
+                total += len(chunk)
+                if total > max_capture:
+                    overflow.set()
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+
         threads = [
-            threading.Thread(target=lambda: out_buf.append(proc.stdout.read())),
-            threading.Thread(target=lambda: err_buf.append(proc.stderr.read())),
+            threading.Thread(target=_pump, args=(proc.stdout, out_buf)),
+            threading.Thread(target=_pump, args=(proc.stderr, err_buf)),
         ]
         for t in threads:
             t.start()
@@ -221,10 +243,11 @@ class JudgeWorker:
             t.join()
         elapsed_ms = int((time.monotonic() - started) * 1000)
 
-        stdout = out_buf[0] if out_buf else b""
-        stderr = err_buf[0] if err_buf else b""
-        if len(stdout) > limits.output_limit_kb * 1024:
-            return ExecutionResult("output_limit_exceeded", stdout[:4096], stderr,
+        stdout = b"".join(out_buf)
+        stderr = b"".join(err_buf)
+        if overflow.is_set():
+            # 因超限被 kill 的进程退出码是 -9，不能落进下方 137/-9 → TLE 的分支
+            return ExecutionResult("output_limit_exceeded", stdout[:4096], stderr[:4096],
                                    elapsed_ms, 0, proc.returncode, compile)
         if timed_out:
             return ExecutionResult("time_limit_exceeded", stdout, stderr, elapsed_ms, 0, -9, compile)
