@@ -495,7 +495,7 @@ async def rejudge_submission(
 @router.get("/judges")
 async def judges(db: AsyncSession = Depends(get_db)):
     """节点状态聚合：网关快照（节点容量占用 + 等待队列）"""
-    return get_gateway().snapshot()
+    return await get_gateway().snapshot()
 
 
 # ---------- AI 助手用量看板（阶段8-C） ----------

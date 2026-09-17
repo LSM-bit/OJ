@@ -56,6 +56,17 @@ def aggregate_status(statuses: list[str]) -> str:
     return "accepted" if all(x == "accepted" for x in statuses) else "system_error"
 
 
+def _json_safe(obj):
+    """将 result 中的 bytes 转为 str，保证可 JSON 序列化（Redis Stream 发布）"""
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", errors="replace")
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    return obj
+
+
 class NodeDaemon:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -216,7 +227,7 @@ class NodeDaemon:
         """发布结果到结果 Stream"""
         await self.redis.xadd(
             STREAM_JUDGE_RESULTS,
-            {"data": json.dumps(result, ensure_ascii=False)},
+            {"data": json.dumps(_json_safe(result), ensure_ascii=False)},
         )
 
     # ---------- 判题 ----------
