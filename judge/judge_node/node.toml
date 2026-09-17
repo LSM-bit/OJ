@@ -8,7 +8,7 @@ token = "dev-judge-token"
 [node]
 id = ""                        # 留空自动生成
 name = ""                      # 展示名，留空用主机名
-capacity = 2                   # 并发判题容量
+capacity = 1                   # 并发判题容量（2G 服务器设为 1 防止 OOM）
 
 [paths]
 workspace = "/workspace"       # 判题临时工作区（容器内）

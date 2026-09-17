@@ -18,9 +18,28 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    # 2G 服务器内存限制 + PostgreSQL 内存优化（防止 OOM）
+    shm_size: 64mb
+    command: >
+      postgres
+        -c shared_buffers=64MB
+        -c work_mem=4MB
+        -c maintenance_work_mem=32MB
+        -c effective_cache_size=128MB
+        -c max_connections=30
+        -c wal_buffers=4MB
+        -c min_wal_size=40MB
+        -c max_wal_size=128MB
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.50'
 
   redis:
     image: redis:7-alpine
+    # 2G 服务器内存限制 + LRU 淘汰策略（内存满时自动驱逐旧 key）
+    command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru --save ""
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
@@ -31,6 +50,11 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 80M
+          cpus: '0.25'
 
   # MinIO 对象存储：题目测试数据（oj-problems）+ 用户头像（oj-avatars）
   # 镜像源说明：MinIO 已于 2026-09 删除 Docker Hub 上的 minio/minio —— 官方名
@@ -54,8 +78,14 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 200M
+          cpus: '0.25'
 
   # 判题节点（nsjail 沙箱，主动外连 API 网关 gRPC；dev 形态连宿主机 API）
+  # 架构变化：节点从 Redis Stream 拉取任务（不再通过 gRPC 推送）
   judge-node:
     build:
       context: ..
@@ -64,6 +94,7 @@ services:
       - judge-node.env  # SERVER_TOKEN（与 api 侧 JUDGE_GATEWAY_TOKENS[0] 一致；dev 值 dev-judge-token）
     environment:
       SERVER_ADDRESS: "host.docker.internal:50051"
+      REDIS_URL: "redis://redis:6379/0"   # Redis Stream 连接地址
     # Linux 上 Docker 引擎（非 Desktop）不解析 host.docker.internal，加映射指向宿主机
     # host-gateway 是 Docker 20.10+ 内置关键字（自动解析为宿主机 IP）
     extra_hosts:
@@ -71,6 +102,11 @@ services:
     privileged: true
     networks: [ojnet]
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: '0.50'
 
   # AI 助手节点（LLM 中转，外连 API 助手网关 gRPC :50060；无沙箱需求，非 privileged）
   # ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL / SERVER_TOKEN 经 env_file 从 deploy/.env 注入，
@@ -91,6 +127,11 @@ services:
       - "host.docker.internal:host-gateway"
     networks: [ojnet]
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.25'
 
 networks:
   ojnet:

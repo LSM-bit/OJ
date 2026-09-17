@@ -18,6 +18,11 @@ services:
         condition: service_healthy
     networks: [ojnet]
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.50'
 
   web:
     build:
@@ -37,14 +42,27 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.25'
 
-  # 生产：节点直连 api 容器的 gRPC 网关（覆盖 base 的 host.docker.internal）
+  # 生产：节点直连 api 容器的 gRPC 网关 + Redis Stream
   judge-node:
     environment:
       SERVER_ADDRESS: api:50051
+      REDIS_URL: "redis://redis:6379/0"
     depends_on:
       api:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: '0.50'
 
   assistant-node:
     environment:
@@ -52,3 +70,8 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.25'

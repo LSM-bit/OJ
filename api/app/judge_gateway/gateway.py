@@ -1,31 +1,36 @@
-"""判题网关：维护节点注册表 + 任务下发 + 结果回写
+"""判题网关：维护节点注册表 + Redis Stream 任务队列 + 结果回写
+
+使用 Redis Stream 持久化任务，架构变化：
+  - 任务入 Redis Stream（oj:judge:queue），节点主动消费
+  - 节点完成判题后发布结果到 oj:judge:results Stream
+  - 网关订阅结果 Stream 并写库
+  - 支持 API 重启后任务不丢失、节点断连自动重投
 
 节点生命周期：
-  Connect(bidi 流) → Register(token 认证) → 网关持续下发 SubmitJob
-  节点回传 JudgeResult → 回调 result_sink（写 DB / 推 WebSocket）
-  心跳超时的节点被摘除，其 in-flight 任务由任务池重新调度
+  Connect(bidi 流) → Register(token 认证) → 心跳保活
+  节点主动从 Redis Stream 拉取任务 → 判题 → 回传结果到结果 Stream
 """
 
 import asyncio
 import logging
 import uuid
-from collections import defaultdict, deque
 
 import grpc
 from google.protobuf.empty_pb2 import Empty
 
 from app.config import settings
 from app.judge_gateway.gen.judge.v1 import judge_pb2, judge_pb2_grpc
+from app.services.judge_queue import judge_queue
 
 logger = logging.getLogger("judge-gateway")
 
 
 class Node:
-    def __init__(self, node_id: str, name: str, capacity: int, queue: asyncio.Queue):
+    """判题节点状态"""
+    def __init__(self, node_id: str, name: str, capacity: int):
         self.node_id = node_id
         self.name = name
         self.capacity = capacity
-        self.queue = queue          # 待下发任务（ServerMessage）
         self.out_stream: asyncio.Queue | None = None  # 由 Connect 注入
         self.last_seen = 0.0
         self.running = 0
@@ -37,36 +42,85 @@ class JudgeGatewayServicer(judge_pb2_grpc.JudgeGatewayServicer):
         self.result_sink = result_sink
         self.nodes: dict[str, Node] = {}
         self.pending: dict[str, asyncio.Future] = {}  # submission_id -> 等结果
-        self.waiting_jobs: deque = deque()            # 无空闲节点时排队
         self._lock = asyncio.Lock()
+        # 结果消费 task
+        self._result_consumer_task: asyncio.Task | None = None
 
     # ---------- 供 FastAPI 侧调用 ----------
 
+    async def start(self) -> None:
+        """启动网关（初始化结果消费者）"""
+        self._result_consumer_task = asyncio.create_task(
+            self._result_consumer_loop()
+        )
+
+    async def stop(self) -> None:
+        """停止网关"""
+        if self._result_consumer_task:
+            self._result_consumer_task.cancel()
+            try:
+                await self._result_consumer_task
+            except asyncio.CancelledError:
+                pass
+            self._result_consumer_task = None
+
     async def submit(self, job: judge_pb2.SubmitJob, timeout: float = 120.0) -> judge_pb2.JudgeResult:
-        """提交判题任务并等待结果（FastAPI 路由调用）"""
+        """提交判题任务到 Redis Stream 并等待结果"""
         fut = asyncio.get_running_loop().create_future()
         self.pending[job.submission_id] = fut
-        await self._dispatch(job)
+        # 入 Redis Stream（序列化 proto 为 JSON）
+        await judge_queue.enqueue_judge({
+            "submission_id": job.submission_id,
+            "language": job.language,
+            "code": job.code.decode("utf-8", errors="replace"),
+            "limits": {
+                "time_limit_ms": job.limits.time_limit_ms,
+                "memory_limit_mb": job.limits.memory_limit_mb,
+                "output_limit_kb": job.limits.output_limit_kb,
+                "process_limit": job.limits.process_limit,
+            },
+            "problem_id": job.problem_id,
+            "data_version": job.data_version,
+            "cases": [{"test_case_id": c.test_case_id, "score": c.score} for c in job.cases],
+            "stop_on_failure": job.stop_on_failure,
+        })
         try:
             return await asyncio.wait_for(fut, timeout)
+        except asyncio.TimeoutError:
+            self.pending.pop(job.submission_id, None)
+            raise
         finally:
             self.pending.pop(job.submission_id, None)
 
     async def run_code(self, job: judge_pb2.RunCodeJob, timeout: float = 60.0) -> judge_pb2.RunCodeResult:
         """用户自测：单次运行代码，不比对不落库"""
         fut = asyncio.get_running_loop().create_future()
-        self.pending[job.request_id] = fut  # pending 共用：request_id 与 submission_id 空间隔离
-        await self._dispatch_run_code(job)
+        self.pending[job.request_id] = fut
+        await judge_queue.enqueue_run({
+            "request_id": job.request_id,
+            "language": job.language,
+            "code": job.code.decode("utf-8", errors="replace"),
+            "input": job.input.decode("utf-8", errors="replace"),
+            "limits": {
+                "time_limit_ms": job.limits.time_limit_ms,
+                "memory_limit_mb": job.limits.memory_limit_mb,
+                "output_limit_kb": job.limits.output_limit_kb,
+                "process_limit": job.limits.process_limit,
+            },
+        })
         try:
             return await asyncio.wait_for(fut, timeout)
+        except asyncio.TimeoutError:
+            self.pending.pop(job.request_id, None)
+            raise
         finally:
             self.pending.pop(job.request_id, None)
 
     async def node_count(self) -> int:
         return sum(1 for n in self.nodes.values() if n.out_stream is not None)
 
-    def snapshot(self) -> dict:
-        """网关只读快照（/admin/judges 用）：节点列表 + 队列深度，不产生 gRPC 往返"""
+    async def snapshot(self) -> dict:
+        """网关只读快照（/admin/judges 用）：节点列表 + 队列深度"""
         loop = asyncio.get_running_loop().time()
         nodes = [{
             "node_id": n.node_id,
@@ -76,52 +130,49 @@ class JudgeGatewayServicer(judge_pb2_grpc.JudgeGatewayServicer):
             "online": n.out_stream is not None,
             "last_seen_seconds_ago": round(loop - n.last_seen, 1) if n.last_seen else None,
         } for n in self.nodes.values()]
-        return {"nodes": nodes, "queue_length": len(self.waiting_jobs),
-                "pending_count": len(self.pending)}
+        queue_stats = await judge_queue.queue_stats()
+        return {
+            "nodes": nodes,
+            "pending_count": len(self.pending),
+            **queue_stats,
+        }
 
-    # ---------- 内部 ----------
+    # ----------
 
-    async def _dispatch(self, job) -> None:
-        # 找一个有空余容量的在线节点
-        for node in self.nodes.values():
-            if node.out_stream is not None and node.running < node.capacity:
-                node.running += 1
-                await node.out_stream.put(judge_pb2.ServerMessage(job=job))
-                return
-        self.waiting_jobs.append(job)
-        # 有排队的任务时顺便唤醒一轮调度
-        asyncio.get_running_loop().call_soon(self._try_redistribute)
-
-    async def _dispatch_run_code(self, job) -> None:
-        """自测任务下发；无可用节点直接报错（不排队，自测要求低延迟）"""
-        for node in self.nodes.values():
-            if node.out_stream is not None and node.running < node.capacity:
-                node.running += 1
-                await node.out_stream.put(judge_pb2.ServerMessage(run_code=job))
-                return
-        raise RuntimeError("没有可用的判题节点")
-
-    def _try_redistribute(self) -> None:
-        while self.waiting_jobs:
-            job = self.waiting_jobs[0]
-            placed = False
-            for node in self.nodes.values():
-                if node.out_stream is not None and node.running < node.capacity:
-                    node.running += 1
-                    node.out_stream.put_nowait(judge_pb2.ServerMessage(job=job))
-                    placed = True
-                    break
-            if not placed:
-                return
-            self.waiting_jobs.popleft()
-
-    def _resolve(self, result) -> None:
-        fut = self.pending.pop(result.submission_id, None)
+    async def _resolve(self, result) -> None:
+        """解析判题结果，设置 future 或回调 result_sink"""
+        submission_id = result.get("submission_id")
+        fut = self.pending.pop(submission_id, None)
         if fut and not fut.done():
             fut.set_result(result)
         elif fut is None and self.result_sink:
             # 主动推送模式的结果（重判等），交给上层落库
             asyncio.get_running_loop().create_task(self.result_sink(result))
+
+    async def _resolve_run_code(self, rc) -> None:
+        """解析自测结果"""
+        request_id = rc.get("request_id")
+        fut = self.pending.pop(request_id, None)
+        if fut and not fut.done():
+            fut.set_result(rc)
+
+    async def _result_consumer_loop(self) -> None:
+        """后台消费结果 Stream"""
+        logger.info("结果消费者启动")
+        while True:
+            try:
+                results = await judge_queue.consume_results("api-gateway", count=10)
+                for msg_id, result in results:
+                    if "submission_id" in result:
+                        await self._resolve(result)
+                    elif "request_id" in result:
+                        await self._resolve_run_code(result)
+                    await judge_queue.ack_result(msg_id)
+            except asyncio.CancelledError:
+                break
+            except Exception:  # noqa: BLE001
+                logger.exception("结果消费异常")
+                await asyncio.sleep(1)
 
     # ---------- gRPC 服务实现 ----------
 
@@ -137,7 +188,7 @@ class JudgeGatewayServicer(judge_pb2_grpc.JudgeGatewayServicer):
             await context.abort(grpc.StatusCode.UNAUTHENTICATED, "token 无效")
 
         node_id = reg.node_id or f"{reg.name or 'node'}-{uuid.uuid4().hex[:8]}"
-        node = Node(node_id, reg.name, reg.capacity or 1, asyncio.Queue(64))
+        node = Node(node_id, reg.name, reg.capacity or 1)
         node.out_stream = asyncio.Queue(64)
         node.last_seen = asyncio.get_running_loop().time()
         async with self._lock:
@@ -147,7 +198,6 @@ class JudgeGatewayServicer(judge_pb2_grpc.JudgeGatewayServicer):
         ack = judge_pb2.ServerMessage(ack=judge_pb2.RegisterAck(
             node_id=node_id, heartbeat_interval_seconds=10))
         await node.out_stream.put(ack)
-        self._try_redistribute()
 
         async def _out_gen():
             while True:
@@ -175,19 +225,38 @@ class JudgeGatewayServicer(judge_pb2_grpc.JudgeGatewayServicer):
                     pass  # 已更新 last_seen；CPU/内存指标留给监控接口
                 elif msg.HasField("result"):
                     node.running = max(0, node.running - 1)
-                    self._resolve(msg.result)
-                    self._try_redistribute()
+                    # 结果入 Redis Stream，由后台消费者统一处理
+                    await judge_queue.publish_result({
+                        "submission_id": msg.result.submission_id,
+                        "status": msg.result.status,
+                        "score": msg.result.score,
+                        "time_used_ms": msg.result.time_used_ms,
+                        "memory_used_kb": msg.result.memory_used_kb,
+                        "error_message": msg.result.error_message,
+                        "cases": [
+                            {
+                                "test_case_id": c.test_case_id,
+                                "status": c.status,
+                                "time_used_ms": c.time_used_ms,
+                                "memory_used_kb": c.memory_used_kb,
+                                "score": c.score,
+                                "output": c.output.decode("utf-8", errors="replace") if c.output else "",
+                            }
+                            for c in msg.result.cases
+                        ],
+                    })
                 elif msg.HasField("run_code_result"):
                     node.running = max(0, node.running - 1)
-                    self._resolve_run_code(msg.run_code_result)
-                    self._try_redistribute()
+                    await judge_queue.publish_result({
+                        "request_id": msg.run_code_result.request_id,
+                        "status": msg.run_code_result.status,
+                        "output": msg.run_code_result.output.decode("utf-8", errors="replace"),
+                        "error_message": msg.run_code_result.error_message,
+                        "time_used_ms": msg.run_code_result.time_used_ms,
+                        "memory_used_kb": msg.run_code_result.memory_used_kb,
+                    })
         except Exception:  # noqa: BLE001 节点断开属正常生命周期
             pass
-
-    def _resolve_run_code(self, rc) -> None:
-        fut = self.pending.pop(rc.request_id, None)
-        if fut and not fut.done():
-            fut.set_result(rc)
 
     async def FetchProblemData(self, request, context):
         """题目测试数据分块下发；x-node-token 元数据认证"""

@@ -26,10 +26,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && cp /tmp/nsjail/nsjail /usr/local/bin/nsjail \
     && rm -rf /tmp/nsjail
 
-# gRPC 依赖（pypi 清华镜像）
+# gRPC + Redis 依赖（pypi 清华镜像）
 RUN python3 -m pip install --break-system-packages --no-cache-dir \
     -i https://pypi.tuna.tsinghua.edu.cn/simple \
-    grpcio==1.83.0 protobuf==7.36.0
+    grpcio==1.83.0 protobuf==7.36.0 redis>=5.2
 
 WORKDIR /opt/judge-node
 COPY judge/judge_node/ ./judge_node/
