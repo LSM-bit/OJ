@@ -36,9 +36,9 @@ async def test_submit_full_flow_ac(client, normal_user, gateway):
 
     jobs = await drain_node_queue(node)
     assert len(jobs) == 1
-    assert jobs[0].language == "python3.12"
-    assert [c.test_case_id for c in jobs[0].cases] == ["tc0", "tc1"]
-    assert jobs[0].stop_on_failure is True  # 普通提交默认 ACM 短路
+    assert jobs[0]["language"] == "python3.12"
+    assert [c["test_case_id"] for c in jobs[0]["cases"]] == ["tc0", "tc1"]
+    assert jobs[0]["stop_on_failure"] is True  # 普通提交默认 ACM 短路
 
     await resolve_submit(gateway, jobs[0], status="accepted", score=100)
 
@@ -142,12 +142,13 @@ async def test_run_code_endpoint(client, normal_user, gateway):
         "/submissions/run", json={"language": "python3.12", "code": "print(1+1)", "stdin": ""},
         headers=await auth_header(normal_user)))
     jobs = await drain_node_queue(node)
-    assert jobs and hasattr(jobs[0], "request_id")
+    assert jobs and "request_id" in jobs[0]
 
-    from app.judge_gateway.gen.judge.v1 import judge_pb2
-    gw_rc = judge_pb2.RunCodeResult(request_id=jobs[0].request_id, status="finished",
-                                    output=b"2\n", time_used_ms=5, memory_used_kb=9000)
-    gateway._resolve_run_code(gw_rc)
+    # Redis Stream 架构：自测结果同样以 dict 直达 _resolve_run_code
+    gw_rc = {"request_id": jobs[0]["request_id"], "status": "finished",
+             "output": "2\n", "time_used_ms": 5, "memory_used_kb": 9000,
+             "error_message": ""}
+    await gateway._resolve_run_code(gw_rc)
     r = await await_or_raise(req_task)
     assert r.status_code == 200, r.text
     assert r.json()["output"] == "2\n"

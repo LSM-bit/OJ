@@ -31,6 +31,7 @@ from app.models import (
     UserRole,
 )
 from app.routers.submissions import NODE_STATUS_MAP, STATUS_LABEL
+from app.services import runtime_log
 from app.services.auth import require_admin
 
 router = APIRouter(prefix="/admin", tags=["admin"],
@@ -570,4 +571,30 @@ async def ai_usage(days: int = 14, db: AsyncSession = Depends(get_db)):
         "tools": [{"tool": t, "count": c} for t, c in tool_rows],
         "top_users": top_users,
     }
+
+
+# ---------- 运行日志（内存环形缓冲） ----------
+
+@router.get("/logs")
+async def list_logs(
+    level: str = "",
+    q: str = "",
+    before: int | None = None,
+    limit: int = 200,
+):
+    """运行日志查询：新→旧。
+
+    - level: error / warning / info（该级别及以上；空 = 全量）
+    - q: 关键词（匹配消息/记录器名/级别）
+    - before: 游标——取 id < before 的更旧记录（前端「加载更多」）
+    - 返回 stats 为整个缓冲的级别计数（不受筛选影响，做徽标）
+    """
+    return runtime_log.query(level=level, q=q, before=before, limit=limit)
+
+
+@router.delete("/logs")
+async def clear_logs():
+    """清空运行日志缓冲（进程内存，重启亦清空）"""
+    n = runtime_log.clear()
+    return {"ok": True, "cleared": n}
 

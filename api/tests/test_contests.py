@@ -143,9 +143,9 @@ async def test_contest_submit_flow_and_standings(client, normal_user, gateway):
         headers=await auth_header(normal_user)))
     jobs = await drain_node_queue(node)
     assert len(jobs) == 1
-    # ACM 赛制 stop_on_failure=True
-    assert jobs[0].stop_on_failure is True
-    assert jobs[0].problem_id == str(p["id"])
+    # ACM 赛制 stop_on_failure=True（队列里是 job dict）
+    assert jobs[0]["stop_on_failure"] is True
+    assert jobs[0]["problem_id"] == str(p["id"])
     await resolve_submit(gateway, jobs[0], status="accepted", score=100)
 
     r = await await_or_raise(req_task)

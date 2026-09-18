@@ -1,6 +1,7 @@
 """FastAPI 应用入口"""
 
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -15,9 +16,12 @@ from app.judge_gateway.server import get_gateway, start_grpc_server, stop_grpc_s
 from app.routers import (admin, assistant, contests, misc, playlists, problems,
                          submissions, teams, users)
 from app.services import problem_data
+from app.services import runtime_log
 from app.utils.json_response import BigIdJSONResponse
 
 logging.basicConfig(level=logging.INFO)
+# 运行日志环形缓冲：后台「运行日志」页数据源（越早装上，启动期日志越全）
+runtime_log.install()
 
 
 @asynccontextmanager
@@ -63,6 +67,31 @@ async def avatar(filename: str) -> Response:
     # 缓存一小时：头像文件名 per 用户固定（覆盖写），短缓存避免更新后浏览器还用旧图
     return Response(content=data, media_type=media_type,
                     headers={"Cache-Control": "public, max-age=3600"})
+
+@app.middleware("http")
+async def log_http_errors(request, call_next):
+    """HTTP 错误定向进运行日志：>=400 的请求一行 WARNING/ERROR（含耗时）。
+    uvicorn access log 不向 root 传播，这里只补错误请求，正常请求不刷屏；
+    未捕获异常栈也落日志，后台可免 SSH 排障。"""
+    t0 = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        logging.getLogger("oj.http").error(
+            "HTTP 500 %s %s（未捕获异常）", request.method, request.url.path,
+            exc_info=True)
+        raise
+    if response.status_code >= 400:
+        ms = (time.perf_counter() - t0) * 1000
+        log = logging.getLogger("oj.http")
+        if response.status_code >= 500:
+            log.error("HTTP %d %s %s %.0fms", response.status_code,
+                      request.method, request.url.path, ms)
+        else:
+            log.warning("HTTP %d %s %s %.0fms", response.status_code,
+                        request.method, request.url.path, ms)
+    return response
+
 
 app.add_middleware(
     CORSMiddleware,

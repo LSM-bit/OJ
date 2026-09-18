@@ -47,6 +47,7 @@ const router = createRouter({
         { path: 'judges', name: 'admin-judges', component: () => import('../views/admin/AdminJudges.vue') },
         { path: 'ai-usage', name: 'admin-ai-usage', component: () => import('../views/admin/AdminAiUsage.vue') },
         { path: 'announcements', name: 'admin-announcements', component: () => import('../views/admin/AdminAnnouncements.vue') },
+        { path: 'logs', name: 'admin-logs', component: () => import('../views/admin/AdminLogs.vue') },
       ],
     },
     { path: '/login', name: 'login', component: () => import('../views/LoginView.vue') },

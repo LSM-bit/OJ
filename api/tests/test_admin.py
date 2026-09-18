@@ -16,7 +16,7 @@ pytestmark = pytest.mark.asyncio
 async def test_admin_requires_admin(client, normal_user):
     """普通用户访问后台一律 401/403"""
     gets = ["/admin/overview", "/admin/users", "/admin/problems",
-            "/admin/contests", "/admin/judges", "/admin/ai-usage"]
+            "/admin/contests", "/admin/judges", "/admin/ai-usage", "/admin/logs"]
     posts = ["/admin/submissions/1/rejudge"]
     puts = [("/admin/users/1/role", {"role": "admin"}),
             ("/admin/users/1/ban", {"banned": True})]
@@ -29,6 +29,8 @@ async def test_admin_requires_admin(client, normal_user):
     for url, json in puts:
         r = await client.put(url, json=json, headers=await auth_header(normal_user))
         assert r.status_code in (401, 403), f"{url} → {r.status_code}"
+    r = await client.delete("/admin/logs", headers=await auth_header(normal_user))
+    assert r.status_code in (401, 403)
 
     # 未登录
     r = await client.get("/admin/overview")
@@ -229,7 +231,7 @@ async def test_rejudge_flow(client, normal_user, admin_user, gateway):
         f"/admin/submissions/{sub_id}/rejudge", headers=await auth_header(admin_user)))
     jobs = await drain_node_queue(node)
     assert len(jobs) == 1
-    assert jobs[0].code  # 源码从 DB 留存复用
+    assert jobs[0]["code"]  # 源码从 DB 留存复用（队列里是 job dict）
     await resolve_submit(gateway, jobs[0], status="accepted", score=100)
     r = await await_or_raise(rejudge_task)
     assert r.status_code == 200, r.text
@@ -400,6 +402,55 @@ async def test_announcement_crud(client, normal_user, admin_user):
                              headers=await auth_header(admin_user))).status_code == 404
     assert (await client.delete(f"/misc/announcements/{aid}",
                                 headers=await auth_header(admin_user))).status_code == 404
+
+
+async def test_runtime_logs_query_and_clear(client, admin_user):
+    """运行日志：emit → 查询/新→旧/级别筛选/关键词/游标/异常栈 → 清空"""
+    import logging as _logging
+
+    log = _logging.getLogger("test.logs")
+    # pytest 默认把 root 级别压到 WARNING（basicConfig 在已有 handler 时是空操作），
+    # 线上 main.py 的 basicConfig(level=INFO) 才是常态；这里显式开 INFO 对齐线上行为
+    log.setLevel(_logging.INFO)
+    marker = "OJTESTMARKER"
+    log.info("%s info-one", marker)
+    log.warning("%s warn-one", marker)
+    log.error("%s error-one", marker)
+    try:
+        raise ValueError("boom-marker")
+    except ValueError:
+        log.error("%s with-exc", marker, exc_info=True)
+
+    h = await auth_header(admin_user)
+
+    # 全量 + 关键词：恰好 4 条标记日志，新→旧，附带异常栈
+    r = await client.get("/admin/logs", params={"q": marker}, headers=h)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    msgs = [e["message"] for e in body["items"]]
+    assert msgs == [f"{marker} with-exc", f"{marker} error-one",
+                    f"{marker} warn-one", f"{marker} info-one"]
+    assert all(e["logger"] == "test.logs" for e in body["items"])
+    exc_entry = body["items"][0]
+    assert "ValueError" in exc_entry["exc"] and "boom-marker" in exc_entry["exc"]
+    assert body["stats"]["error"] >= 2
+
+    # 级别筛选：error 只剩两条 error 级标记
+    r = await client.get("/admin/logs", params={"q": marker, "level": "error"}, headers=h)
+    assert [e["message"] for e in r.json()["items"]] == \
+        [f"{marker} with-exc", f"{marker} error-one"]
+
+    # 游标：before=倒数第二条的 id → 只剩最旧的 info
+    ids = [e["id"] for e in body["items"]]
+    r = await client.get("/admin/logs", params={"q": marker, "before": ids[2]}, headers=h)
+    assert [e["message"] for e in r.json()["items"]] == [f"{marker} info-one"]
+
+    # 清空 → 标记日志全部消失（清空动作自身留一条警告不影响）
+    r = await client.delete("/admin/logs", headers=h)
+    assert r.status_code == 200
+    assert r.json()["cleared"] >= 4
+    r = await client.get("/admin/logs", params={"q": marker}, headers=h)
+    assert r.json()["items"] == []
 
 
 # ---------------- 工具 ----------------

@@ -245,7 +245,7 @@ async def _make_public_problem(client, user, *, title: str, tags: list[str]) -> 
     jobs = await drain_node_queue(node)
     for job in jobs:
         await resolve_submit(gw, job, status="accepted", score=100,
-                             cases=[{"test_case_id": c.test_case_id, "status": "accepted"} for c in job.cases])
+                             cases=[{"test_case_id": c["test_case_id"], "status": "accepted"} for c in job["cases"]])
     r = await asyncio.wait_for(task, timeout=10)
     assert r.status_code == 200 and r.json()["verified"] is True, r.text
 

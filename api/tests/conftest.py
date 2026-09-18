@@ -147,73 +147,168 @@ async def normal_user(db_sessionmaker):
         return await make_user(db, "alice", UserRole.USER)
 
 
-# ---------------- 判题网关注入 ----------------
+# ---------------- 判题网关注入（Redis Stream 架构：内存假队列） ----------------
+
+class _FakeJudgeQueue:
+    """测试用内存判题队列：替代 Redis Stream（仅实现网关用到的最小子集）。
+    任务经 enqueue_judge/enqueue_run 入队，测试用 drain_node_queue 取走；
+    结果不走结果 Stream，测试直接调 gw._resolve 唤醒 Future。"""
+
+    def __init__(self):
+        self.judge_jobs: list[tuple[str, dict]] = []
+        self.run_jobs: list[tuple[str, dict]] = []
+        self.results: list[tuple[str, dict]] = []
+        self._n = 0
+
+    def _next_id(self, prefix: str) -> str:
+        self._n += 1
+        return f"{prefix}-{self._n}"
+
+    async def enqueue_judge(self, job: dict) -> str:
+        mid = self._next_id("j")
+        self.judge_jobs.append((mid, job))
+        return mid
+
+    async def enqueue_run(self, job: dict) -> str:
+        mid = self._next_id("r")
+        self.run_jobs.append((mid, job))
+        return mid
+
+    async def publish_result(self, result: dict) -> str:
+        mid = self._next_id("res")
+        self.results.append((mid, result))
+        return mid
+
+    async def consume_results(self, consumer_id, count=10):
+        return []
+
+    async def ack_result(self, msg_id):
+        pass
+
+    async def queue_stats(self):
+        return {"judge_queue_len": len(self.judge_jobs),
+                "run_queue_len": len(self.run_jobs),
+                "results_queue_len": len(self.results),
+                "groups": []}
+
+
+# 当前 gateway fixture 挂载的假队列（drain_node_queue 取任务用）
+_fake_judge_queue: _FakeJudgeQueue | None = None
+
 
 @pytest_asyncio.fixture()
 async def gateway():
-    """向 server 模块注入真实 JudgeGatewayServicer（无 gRPC 服务器），返回它。
-    测试通过操作 gateway.nodes / gateway.pending 直接编排判题结果。"""
+    """向 server 模块注入真实 JudgeGatewayServicer（无 gRPC 服务器），
+    并把 gateway 模块的 judge_queue 换成内存假实现（测试无 Redis）。
+    测试通过 gw._resolve 编排判题结果。"""
     from app.judge_gateway.gateway import JudgeGatewayServicer
+    from app.judge_gateway import gateway as gateway_mod
     from app.judge_gateway import server as gw_server
 
+    global _fake_judge_queue
     gw = JudgeGatewayServicer()
     gw_server._gateway = gw
+    _fake_judge_queue = _FakeJudgeQueue()
+    real_queue = gateway_mod.judge_queue
+    gateway_mod.judge_queue = _fake_judge_queue
     yield gw
+    gateway_mod.judge_queue = real_queue
     gw_server._gateway = None
+    _fake_judge_queue = None
 
 
 def add_fake_node(gw, node_id: str = "fake-node", capacity: int = 4):
-    """向网关注册一个假节点（只挂 out_stream 队列，不真正跑判题）"""
+    """向网关注册一个假节点（在线 = out_stream 非空；任务流不走它，走假队列）"""
     from app.judge_gateway.gateway import Node
 
-    node = Node(node_id, "fake", capacity, asyncio.Queue(64))
-    node.out_stream = node.queue  # 网关下发走 out_stream；测试统一从 node.queue 取
+    node = Node(node_id, "fake", capacity)
+    node.out_stream = asyncio.Queue(64)
     node.last_seen = asyncio.get_running_loop().time()
     gw.nodes[node_id] = node
     return node
 
 
-async def drain_node_queue(node, timeout: float = 2.0):
-    """取出假节点队列中的 ServerMessage（SubmitJob 等）
+def active_fake_queue():
+    """当前生效的假判题队列（gateway fixture 把真实队列换成的那个实现）。
 
-    循环 get 直到空（短暂超时即认为队列已空），返回攒到的 job 列表。
+    以 app.judge_gateway.gateway.judge_queue 为唯一真源：本文件会被 pytest 以
+    顶层模块名 `conftest` 加载一次，又被测试文件以包路径 `tests.conftest` 再导入
+    一次，两份实例的模块级全局变量互不共享（夹具里赋值的那个全局，测试文件
+    import 来的函数读到的却是另一份）。读 app 模块属性天然只有一份。
     """
-    jobs = []
-    while True:
-        try:
-            msg = await asyncio.wait_for(node.out_stream.get(), timeout)
-        except (TimeoutError, asyncio.TimeoutError):
-            return jobs
-        if msg.HasField("job"):
-            jobs.append(msg.job)
-        elif msg.HasField("run_code"):
-            jobs.append(msg.run_code)
-        # ack 等其他消息忽略
+    from app.judge_gateway import gateway as gateway_mod
+
+    q = gateway_mod.judge_queue
+    # 跨实例 isinstance 不可靠（_FakeJudgeQueue 类也是两份），用鸭子类型判定
+    if hasattr(q, "judge_jobs") and hasattr(q, "run_jobs"):
+        return q
+    return None
+
+
+async def drain_node_queue(node, timeout: float = 2.0):
+    """从内存假队列取走全部任务（判题 + 自测），返回 job dict 列表。
+
+    请求任务与入队并发执行：小步轮询，连续 idle 无新任务即认为排空。"""
+    queue = active_fake_queue()
+    assert queue is not None, "drain_node_queue 需要 gateway fixture"
+    jobs: list[dict] = []
+
+    def _drain_all():
+        while queue.judge_jobs:
+            _mid, job = queue.judge_jobs.pop(0)
+            jobs.append(job)
+        while queue.run_jobs:
+            _mid, job = queue.run_jobs.pop(0)
+            jobs.append(job)
+
+    idle_grace = 0.3  # 连续无新任务的静默窗口
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        before = len(jobs)
+        _drain_all()
+        if len(jobs) > before:
+            await asyncio.sleep(0.02)  # 可能有新任务在途，交出控制权继续收
+            continue
+        await asyncio.sleep(idle_grace)
+        _drain_all()
+        if len(jobs) == before:
+            break
+    return jobs
+
+
+def _normalize_case(case: dict, *, status: str, time_ms: int, mem_kb: int) -> dict:
+    """把用例级结果补齐为节点协议字段（status/time_used_ms/memory_used_kb/score/output）。
+
+    上层读的是 result["cases"][i]["time_used_ms"] 等固定键，测试手写的 case
+    可能只给状态与分数，这里统一兜底，避免假数据形状与生产不一致。"""
+    c = dict(case)
+    c.setdefault("status", status)
+    c.setdefault("time_used_ms", time_ms)
+    c.setdefault("memory_used_kb", mem_kb)
+    c.setdefault("score", 0)
+    c.setdefault("output", "")
+    return c
 
 
 async def resolve_submit(gw, job, *, status: str = "accepted", score: int = 100,
                          time_ms: int = 10, mem_kb: int = 8000,
                          error_message: str = "", cases=None):
-    """模拟节点回传 JudgeResult，唤醒等待中的 submit() Future"""
-    from app.judge_gateway.gen.judge.v1 import judge_pb2
-
+    """模拟节点回传判题结果：直接调 gw._resolve 唤醒等待中的 submit() Future。
+    （Redis Stream 架构下结果本应经结果消费者走到 _resolve，测试短路直达）
+    job 为 enqueue 时的 dict（提交/验证/重判共用）。"""
     if cases is None:
-        if job is not None and job.cases:
-            cases = [{"test_case_id": c.test_case_id, "status": status}
-                     for c in job.cases]
-        else:
-            cases = []
-    result = judge_pb2.JudgeResult(
-        submission_id=job.submission_id if job is not None else "",
-        status=status, score=score, time_used_ms=time_ms, memory_used_kb=mem_kb,
-        error_message=error_message,
-        cases=[judge_pb2.CaseResult(test_case_id=c["test_case_id"],
-                                    status=c.get("status", status),
-                                    time_used_ms=c.get("time_used_ms", time_ms),
-                                    memory_used_kb=c.get("memory_used_kb", mem_kb),
-                                    score=c.get("score", 0)) for c in cases],
-    )
-    gw._resolve(result)
+        job_cases = job.get("cases", []) if job is not None else []
+        cases = [{"test_case_id": c.get("test_case_id")} for c in job_cases]
+    # 补齐节点回传 case 的固定字段（生产链路上由 proto → JSON 序列化必然带齐这些键）
+    cases = [_normalize_case(c, status=status, time_ms=time_ms, mem_kb=mem_kb)
+             for c in cases]
+    result = {
+        "submission_id": job.get("submission_id") if job is not None else "",
+        "status": status, "score": score,
+        "time_used_ms": time_ms, "memory_used_kb": mem_kb,
+        "error_message": error_message, "cases": cases,
+    }
+    await gw._resolve(result)
     return result
 
 
@@ -243,9 +338,7 @@ async def setup_public_problem(client, user, *, title="A+B",
                           headers=await auth_header(user))
     assert r.status_code == 200, r.text
 
-    # 标程验证（第二步完成后走第三步）——需要判题网关有假节点
-    from app.judge_gateway.gen.judge.v1 import judge_pb2
-
+    # 标程验证（第二步完成后走第三步）——任务流经内存假队列
     from app.judge_gateway import server as gw_server
     gw = gw_server._gateway
     assert gw is not None, "setup_public_problem 需要 gateway fixture 注入判题网关"
@@ -263,8 +356,8 @@ async def setup_public_problem(client, user, *, title="A+B",
         jobs = await drain_node_queue(node)
         for job in jobs:
             await resolve_submit(gw, job, status="accepted", score=100,
-                                 cases=[{"test_case_id": c.test_case_id, "status": "accepted"}
-                                        for c in job.cases])
+                                 cases=[{"test_case_id": c["test_case_id"], "status": "accepted"}
+                                        for c in job["cases"]])
         r = await asyncio.wait_for(task, timeout=10)
         assert r.status_code == 200, r.text
         assert r.json()["verified"] is True, r.text

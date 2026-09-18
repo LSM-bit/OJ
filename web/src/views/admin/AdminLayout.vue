@@ -1,6 +1,6 @@
 <!--
   AdminLayout.vue - 管理后台框架
-  左侧菜单（Dashboard/用户/题目/标签/比赛/题单/团队/提交/判题节点/AI 用量/公告管理）+ 右侧内容区
+  左侧菜单（Dashboard/用户/题目/标签/比赛/题单/团队/提交/判题节点/AI 用量/公告管理/运行日志）+ 右侧内容区
   入口控制：仅作为体验层，真正校验在后端 /admin/* 组级 require_admin
 -->
 <template>
@@ -40,6 +40,9 @@
         </el-menu-item>
         <el-menu-item index="/admin/announcements">
           <span>公告管理</span>
+        </el-menu-item>
+        <el-menu-item index="/admin/logs">
+          <span>运行日志</span>
         </el-menu-item>
       </el-menu>
       <div class="admin-back">
