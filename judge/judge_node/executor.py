@@ -101,6 +101,15 @@ class JudgeWorker:
 
             for case in cases:
                 limits = case.limits
+                # 先按语言放大时限，再叠加 Java 的地址空间放宽
+                factor = LANGUAGE_TIME_FACTOR.get(cases[0].language, 1.0)
+                if factor != 1.0:
+                    limits = ResourceLimits(
+                        time_limit_ms=int(limits.time_limit_ms * factor),
+                        memory_limit_mb=limits.memory_limit_mb,
+                        output_limit_kb=limits.output_limit_kb,
+                        process_limit=limits.process_limit,
+                    )
                 if cases[0].language == "java21":
                     # JVM 预留虚拟地址空间 >> 实际内存，运行阶段 rlimit_as 同样需放宽；
                     # 真实内存占用靠 -Xmx 与 VmHWM 计量约束
@@ -145,6 +154,15 @@ class JudgeWorker:
                 if cres.status != "ok":
                     return {"status": "compile_error", "output": b"",
                             "error_message": cres.stderr.decode("utf-8", errors="replace")[:4000]}
+            # 与 execute_cases 一致：先按语言放大时限
+            factor = LANGUAGE_TIME_FACTOR.get(language, 1.0)
+            if factor != 1.0:
+                limits = ResourceLimits(
+                    time_limit_ms=int(limits.time_limit_ms * factor),
+                    memory_limit_mb=limits.memory_limit_mb,
+                    output_limit_kb=limits.output_limit_kb,
+                    process_limit=limits.process_limit,
+                )
             if language == "java21":
                 # 与 execute_cases 一致：JVM 预留虚拟地址空间 >> 实际内存，rlimit_as 需放宽
                 limits = ResourceLimits(
@@ -350,6 +368,17 @@ def _tree_peak_rss(root_pid: int) -> int:
     return peak
 
 
+# 语言级时限系数：解释型 / 托管运行时（JVM 冷启动、JIT 预热、CPython 解释开销）
+# 的常数开销远大于原生程序，按业界惯例对墙钟时限整体放宽，避免误判 TLE。
+# 原生编译型语言不放大。
+LANGUAGE_TIME_FACTOR = {
+    "cpp17": 1.0,
+    "c17": 1.0,
+    "java21": 3.0,
+    "python3.12": 2.0,
+}
+
+
 def _commands(language: str, workdir: str) -> tuple[str, list[str], list[str] | None]:
     """返回 (源文件名, 运行命令, 编译命令|None)。工具链用绝对路径保证 nsjail 下确定。"""
     # 编译/运行命令都通过 sh -c 包装，确保 PATH 可用
@@ -370,7 +399,9 @@ def _commands(language: str, workdir: str) -> tuple[str, list[str], list[str] | 
         return "Main.java", [
             "/usr/bin/java", "-Xss8m", "-Xmx256m",
             "-XX:ReservedCodeCacheSize=64m", "-XX:CompressedClassSpaceSize=128m",
-            "-Xshare:off", "-cp", workdir, "Main"], [
+            # -Xshare:auto（JDK 默认）复用镜像内 CDS 归档，显著降低 JVM 冷启动开销；
+            # 归档不可用时自动静默降级，无需显式 -Xshare:off
+            "-Xshare:auto", "-cp", workdir, "Main"], [
             "/bin/sh", "-c",
             # javac 也是 JVM：默认堆按物理内存 1/4 预留，会占满低 4GB rlimit_as 导致 native 堆 OOM，
             # 显式限制堆并用 SerialGC 减少线程/地址空间压力
