@@ -8,9 +8,14 @@
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-# http 源 + 阿里云镜像（构建环境无 ca 证书信任时 https 会失败）
-RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.aliyun.com|g; s|http://security.ubuntu.com|http://mirrors.aliyun.com|g' /etc/apt/sources.list.d/* 2>/dev/null || \
-    sed -i 's|http://archive.ubuntu.com|http://mirrors.aliyun.com|g; s|http://security.ubuntu.com|http://mirrors.aliyun.com|g' /etc/apt/sources.list
+
+# apt 镜像源，可用 --build-arg UBUNTU_MIRROR=... 覆盖：
+#   默认阿里云（服务器侧延续原配置，不改动线上行为）
+#   本地/国内构建建议华为云 http://repo.huaweicloud.com（实测 7.2MB/s vs 阿里云 0.68MB/s）
+# 用 http 而非 https：规避精简构建环境无 ca 证书信任的问题
+ARG UBUNTU_MIRROR=http://mirrors.aliyun.com
+RUN sed -i "s|http://archive.ubuntu.com|${UBUNTU_MIRROR}|g; s|http://security.ubuntu.com|${UBUNTU_MIRROR}|g" /etc/apt/sources.list.d/* 2>/dev/null || \
+    sed -i "s|http://archive.ubuntu.com|${UBUNTU_MIRROR}|g; s|http://security.ubuntu.com|${UBUNTU_MIRROR}|g" /etc/apt/sources.list
 
 # 运行时依赖: Python 3.12 / C++ 工具链 / JDK 21 / protobuf
 # apt 目录挂宿主缓存（BuildKit cache mount）: 本层失效时 deb 仍在缓存里，只做本地安装，
@@ -22,6 +27,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     g++ gcc \
     openjdk-21-jdk-headless \
     protobuf-compiler
+
+# 自检：真实编译一个带万能头的程序，确认 g++ 工具链 + 头文件齐备（缺失即构建失败）
+# 注意 stdc++.h 在 Debian/Ubuntu 下位于 /usr/include/x86_64-linux-gnu/c++/<ver>/bits/，
+# 不在 /usr/include/c++/<ver>/bits/ 下，判题沙箱需挂载 /usr 才能访问
+RUN echo '#include <bits/stdc++.h>' > /tmp/t.cpp \
+    && echo 'int main(){ return 0; }' >> /tmp/t.cpp \
+    && g++ -std=c++17 -O2 -o /tmp/t /tmp/t.cpp \
+    && rm -f /tmp/t.cpp /tmp/t \
+    && echo "OK: bits/stdc++.h compiles"
 
 # nsjail: universe 源缺失，从源码构建（kafel 子模块单独 clone）
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
