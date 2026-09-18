@@ -1,0 +1,743 @@
+/* ============================================================================
+   衡 · Online Judge —— Design System
+   Direction: Editorial Technical（印刷体技术档案）
+   ----------------------------------------------------------------------------
+   设计基调
+     · 纸感暖底 + 墨色文字，拒绝纯黑纯白与冷灰
+     · 朱砂（vermilion）作唯一强行动色，青碧作信息色，其余皆为墨与线的层次
+     · 层级靠「线 + 留白 + 字重字距」建立，不靠层层卡片与阴影
+     · 数字与标识一律等宽 + tabular-nums，取技术档案的精密感
+     · 动效只作用于 transform / opacity / color，统一 ease-out-quint
+
+   本文件在 main.ts 中于 Element Plus 样式之后加载，用于覆盖其默认主题变量。
+   ========================================================================== */
+
+/* ---------------------------------------------------------------- 1. Tokens */
+:root {
+  color-scheme: light;
+
+  /* 画布 · 纸 */
+  --oj-paper:        oklch(96.6% 0.006 80);
+  --oj-paper-sunk:   oklch(94.2% 0.008 80);
+  --oj-surface:      oklch(99.4% 0.003 80);
+  --oj-surface-2:    oklch(97.8% 0.005 80);
+  --oj-surface-3:    oklch(95.4% 0.007 80);
+
+  /* 墨（四级，向品牌色相微偏，避免中性灰的死板） */
+  --oj-ink:          oklch(26% 0.022 264);
+  --oj-ink-2:        oklch(45% 0.018 264);
+  --oj-ink-3:        oklch(60% 0.014 264);
+  --oj-ink-4:        oklch(74% 0.010 264);
+
+  /* 线 */
+  --oj-line:         oklch(90% 0.009 264);
+  --oj-line-soft:    oklch(94% 0.007 264);
+  --oj-line-strong:  oklch(83% 0.012 264);
+
+  /* 品牌 · 朱砂（行动）／青碧（信息） */
+  --oj-accent:       oklch(55.2% 0.181 32);
+  --oj-accent-deep:  oklch(45% 0.160 30);
+  --oj-accent-soft:  oklch(94.5% 0.030 40);
+  --oj-jade:         oklch(52% 0.098 172);
+  --oj-jade-soft:    oklch(94% 0.026 172);
+
+  /* 判题状态 */
+  --oj-ac:     oklch(55% 0.125 156);
+  --oj-warn:   oklch(68% 0.145 68);
+  --oj-fail:   oklch(55% 0.185 27);
+  --oj-idle:   oklch(60% 0.014 264);
+  --oj-info:   oklch(52% 0.090 250);
+  --oj-ac-soft:    oklch(94% 0.032 156);
+  --oj-warn-soft:  oklch(95% 0.038 78);
+  --oj-fail-soft:  oklch(94.5% 0.030 27);
+  --oj-idle-soft:  oklch(95% 0.006 264);
+  --oj-info-soft:  oklch(94.5% 0.024 250);
+
+  /* 字体：Display 取 Bahnschrift（Windows 自带 DIN 系），正文走系统中文栈 */
+  --oj-font-display: Bahnschrift, 'DIN Alternate', 'Segoe UI Variable Display',
+                     system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --oj-font-sans:    system-ui, 'Segoe UI Variable Text', 'Segoe UI',
+                     'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --oj-font-mono:    'Cascadia Mono', 'JetBrains Mono', Consolas, ui-monospace, monospace;
+
+  /* 字号尺度 */
+  --oj-fs-xs: 11px;
+  --oj-fs-sm: 12px;
+  --oj-fs-md: 13.5px;
+  --oj-fs-lg: 15px;
+  --oj-fs-xl: clamp(17px, 0.9vw + 14px, 21px);
+  --oj-fs-2xl: clamp(21px, 1.5vw + 15px, 28px);
+
+  /* 间距（4pt 基数） */
+  --oj-s1: 4px;  --oj-s2: 8px;  --oj-s3: 12px; --oj-s4: 16px;
+  --oj-s5: 20px; --oj-s6: 24px; --oj-s7: 32px; --oj-s8: 48px;
+
+  /* 圆角：整体克制，取锐角 */
+  --oj-r1: 2px; --oj-r2: 3px; --oj-r3: 5px; --oj-r-pill: 999px;
+
+  /* 阴影：仅用于真正悬浮之物 */
+  --oj-shadow-1: 0 1px 2px oklch(26% 0.022 264 / 0.06);
+  --oj-shadow-2: 0 8px 24px -12px oklch(26% 0.022 264 / 0.20);
+  --oj-shadow-3: 0 24px 60px -28px oklch(26% 0.022 264 / 0.30);
+
+  /* 动效 */
+  --oj-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --oj-dur-1: 120ms; --oj-dur-2: 200ms; --oj-dur-3: 320ms;
+
+  /* 兼容旧引用 */
+  --oj-bg: var(--oj-paper);
+  --oj-border: var(--oj-line);
+
+  /* ---------------------------------------------- Element Plus 主题接管 */
+  --el-font-family: var(--oj-font-sans);
+  --el-font-size-base: 14px;
+
+  --el-color-primary: var(--oj-accent);
+  --el-color-primary-light-3: color-mix(in oklab, var(--oj-accent) 68%, white);
+  --el-color-primary-light-5: color-mix(in oklab, var(--oj-accent) 48%, white);
+  --el-color-primary-light-7: color-mix(in oklab, var(--oj-accent) 28%, white);
+  --el-color-primary-light-8: color-mix(in oklab, var(--oj-accent) 18%, white);
+  --el-color-primary-light-9: color-mix(in oklab, var(--oj-accent) 9%, white);
+  --el-color-primary-dark-2: var(--oj-accent-deep);
+
+  --el-color-success: var(--oj-ac);
+  --el-color-success-light-3: color-mix(in oklab, var(--oj-ac) 68%, white);
+  --el-color-success-light-5: color-mix(in oklab, var(--oj-ac) 48%, white);
+  --el-color-success-light-7: color-mix(in oklab, var(--oj-ac) 28%, white);
+  --el-color-success-light-8: color-mix(in oklab, var(--oj-ac) 18%, white);
+  --el-color-success-light-9: color-mix(in oklab, var(--oj-ac) 9%, white);
+
+  --el-color-warning: var(--oj-warn);
+  --el-color-warning-light-3: color-mix(in oklab, var(--oj-warn) 68%, white);
+  --el-color-warning-light-5: color-mix(in oklab, var(--oj-warn) 48%, white);
+  --el-color-warning-light-7: color-mix(in oklab, var(--oj-warn) 28%, white);
+  --el-color-warning-light-8: color-mix(in oklab, var(--oj-warn) 18%, white);
+  --el-color-warning-light-9: color-mix(in oklab, var(--oj-warn) 10%, white);
+
+  --el-color-danger: var(--oj-fail);
+  --el-color-error: var(--oj-fail);
+  --el-color-danger-light-3: color-mix(in oklab, var(--oj-fail) 68%, white);
+  --el-color-danger-light-5: color-mix(in oklab, var(--oj-fail) 48%, white);
+  --el-color-danger-light-7: color-mix(in oklab, var(--oj-fail) 28%, white);
+  --el-color-danger-light-8: color-mix(in oklab, var(--oj-fail) 18%, white);
+  --el-color-danger-light-9: color-mix(in oklab, var(--oj-fail) 9%, white);
+  --el-color-error-light-3: var(--el-color-danger-light-3);
+  --el-color-error-light-5: var(--el-color-danger-light-5);
+  --el-color-error-light-7: var(--el-color-danger-light-7);
+  --el-color-error-light-8: var(--el-color-danger-light-8);
+  --el-color-error-light-9: var(--el-color-danger-light-9);
+
+  --el-color-info: var(--oj-idle);
+  --el-color-info-light-3: color-mix(in oklab, var(--oj-idle) 68%, white);
+  --el-color-info-light-5: color-mix(in oklab, var(--oj-idle) 48%, white);
+  --el-color-info-light-7: color-mix(in oklab, var(--oj-idle) 28%, white);
+  --el-color-info-light-8: color-mix(in oklab, var(--oj-idle) 18%, white);
+  --el-color-info-light-9: color-mix(in oklab, var(--oj-idle) 8%, white);
+
+  --el-bg-color: var(--oj-surface);
+  --el-bg-color-page: var(--oj-paper);
+  --el-bg-color-overlay: var(--oj-surface);
+  --el-text-color-primary: var(--oj-ink);
+  --el-text-color-regular: var(--oj-ink-2);
+  --el-text-color-secondary: var(--oj-ink-3);
+  --el-text-color-placeholder: var(--oj-ink-4);
+  --el-text-color-disabled: var(--oj-ink-4);
+  --el-text-color-primary-rgb: 38, 42, 58;
+
+  --el-border-color: var(--oj-line-strong);
+  --el-border-color-light: var(--oj-line);
+  --el-border-color-lighter: var(--oj-line-soft);
+  --el-border-color-extra-light: var(--oj-line-soft);
+  --el-border-color-hover: var(--oj-ink-3);
+
+  --el-fill-color: var(--oj-surface-3);
+  --el-fill-color-light: var(--oj-surface-2);
+  --el-fill-color-lighter: var(--oj-surface-2);
+  --el-fill-color-extra-light: var(--oj-surface);
+  --el-fill-color-dark: var(--oj-surface-3);
+  --el-fill-color-darker: var(--oj-surface-3);
+  --el-fill-color-blank: var(--oj-surface);
+
+  --el-mask-color: oklch(26% 0.022 264 / 0.32);
+  --el-mask-color-extra-light: oklch(26% 0.022 264 / 0.14);
+
+  --el-border-radius-base: var(--oj-r2);
+  --el-border-radius-small: var(--oj-r1);
+  --el-border-radius-round: var(--oj-r-pill);
+
+  --el-box-shadow: var(--oj-shadow-2);
+  --el-box-shadow-light: var(--oj-shadow-1);
+  --el-box-shadow-lighter: var(--oj-shadow-1);
+  --el-box-shadow-dark: var(--oj-shadow-3);
+
+  --el-disabled-bg-color: var(--oj-surface-2);
+  --el-disabled-text-color: var(--oj-ink-4);
+  --el-disabled-border-color: var(--oj-line);
+}
+
+/* ------------------------------------------------------- 2. 基础元素 */
+* { box-sizing: border-box; }
+
+html, body, #app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--oj-paper);
+  color: var(--oj-ink);
+  font-family: var(--oj-font-sans);
+  font-size: var(--oj-fs-md);
+  line-height: 1.6;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4 {
+  margin: 0;
+  font-family: var(--oj-font-display);
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  color: var(--oj-ink);
+}
+h1 { font-size: var(--oj-fs-2xl); }
+h2 { font-size: var(--oj-fs-xl); }
+h3 { font-size: var(--oj-fs-lg); }
+
+p { margin: 0; }
+
+a {
+  color: var(--oj-accent-deep);
+  text-decoration-color: color-mix(in oklab, var(--oj-accent) 35%, transparent);
+  text-underline-offset: 2px;
+  transition: color var(--oj-dur-1) var(--oj-ease);
+}
+a:hover { color: var(--oj-accent); }
+
+::selection { background: color-mix(in oklab, var(--oj-accent) 22%, transparent); }
+
+/* 焦点：键盘可见，鼠标不打扰 */
+:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--oj-accent) 65%, transparent);
+  outline-offset: 2px;
+  border-radius: var(--oj-r2);
+}
+
+/* 滚动条：细、低对比，hover 才显形 */
+* { scrollbar-width: thin; scrollbar-color: var(--oj-line-strong) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--oj-line-strong);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--oj-r-pill);
+}
+::-webkit-scrollbar-thumb:hover { background-clip: content-box; background-color: var(--oj-ink-4); }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* ------------------------------------------------- 3. 排版与版面工具类 */
+/* 栏目标签：大写 + 字距，作为分区眼眉 */
+.oj-kicker {
+  font-family: var(--oj-font-display);
+  font-size: var(--oj-fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--oj-ink-3);
+}
+.oj-muted { color: var(--oj-ink-3); }
+.oj-dim { color: var(--oj-ink-4); }
+/* 数字：等宽 + 定宽数字 */
+.oj-num {
+  font-family: var(--oj-font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+/* 分隔线：不靠卡片，靠一条线 */
+.oj-rule { height: 1px; background: var(--oj-line); border: 0; margin: 0; }
+/* 小徽标（非 el-tag 场景） */
+.oj-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r1);
+  background: var(--oj-surface);
+  font-size: var(--oj-fs-xs);
+  color: var(--oj-ink-2);
+}
+/* 指标数字块 */
+.oj-metric { display: flex; flex-direction: column; gap: 2px; }
+.oj-metric > .oj-metric-value {
+  font-family: var(--oj-font-display);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--oj-fs-2xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  color: var(--oj-ink);
+}
+.oj-metric > .oj-metric-label {
+  font-size: var(--oj-fs-xs);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--oj-ink-3);
+}
+
+/* 页面骨架：统一留白节奏（页面可继续用自己的 scoped 样式叠加） */
+.oj-page { padding: var(--oj-s5) var(--oj-s6); }
+.oj-page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--oj-s4);
+  padding-bottom: var(--oj-s3);
+  border-bottom: 1px solid var(--oj-line);
+  margin-bottom: var(--oj-s5);
+}
+.oj-page-head h1, .oj-page-head h2 { line-height: 1.15; }
+
+/* 区块：靠底色差异与留白分组，而非描边卡片 */
+.oj-section {
+  background: var(--oj-surface);
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
+}
+.oj-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--oj-s3);
+  padding: var(--oj-s3) var(--oj-s4);
+  border-bottom: 1px solid var(--oj-line-soft);
+}
+
+/* -------------------------------------------------- 4. Element Plus 调校 */
+/* 按钮：锐角、克制、hover 有位移反馈 */
+.el-button {
+  border-radius: var(--oj-r2);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  transition: background-color var(--oj-dur-1) var(--oj-ease),
+              border-color var(--oj-dur-1) var(--oj-ease),
+              color var(--oj-dur-1) var(--oj-ease),
+              transform var(--oj-dur-1) var(--oj-ease),
+              box-shadow var(--oj-dur-2) var(--oj-ease);
+}
+.el-button:not(.is-disabled):active { transform: translateY(1px); }
+.el-button--primary {
+  --el-button-bg-color: var(--oj-accent);
+  --el-button-border-color: var(--oj-accent);
+  --el-button-hover-bg-color: var(--oj-accent-deep);
+  --el-button-hover-border-color: var(--oj-accent-deep);
+  --el-button-active-bg-color: var(--oj-accent-deep);
+  box-shadow: 0 1px 2px color-mix(in oklab, var(--oj-accent) 30%, transparent);
+}
+.el-button--primary:not(.is-disabled):hover { box-shadow: 0 4px 14px -6px color-mix(in oklab, var(--oj-accent) 75%, transparent); }
+.el-button--default:hover { border-color: var(--oj-ink-3); color: var(--oj-ink); }
+.el-button.is-text, .el-button.is-link { box-shadow: none; }
+.el-button.is-link { text-decoration-color: transparent; }
+.el-button.is-link:hover { text-decoration: underline; }
+
+/* 输入类：focus 时用细环而非变色描边 */
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper {
+  border-radius: var(--oj-r2);
+  box-shadow: 0 0 0 1px var(--oj-line) inset;
+  transition: box-shadow var(--oj-dur-2) var(--oj-ease), background-color var(--oj-dur-2) var(--oj-ease);
+}
+.el-input__wrapper:hover, .el-textarea__inner:hover, .el-select__wrapper:hover {
+  box-shadow: 0 0 0 1px var(--oj-line-strong) inset;
+}
+.el-input__wrapper.is-focus, .el-textarea__inner:focus, .el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px var(--oj-accent) inset,
+              0 0 0 3px color-mix(in oklab, var(--oj-accent) 16%, transparent);
+}
+
+/* 表格：去竖线，表头做小写标签，行靠淡底与细线分隔 */
+.el-table {
+  --el-table-border-color: var(--oj-line-soft);
+  --el-table-header-bg-color: var(--oj-surface-2);
+  --el-table-header-text-color: var(--oj-ink-3);
+  --el-table-row-hover-bg-color: color-mix(in oklab, var(--oj-accent) 4%, var(--oj-surface));
+  --el-table-text-color: var(--oj-ink);
+  background: transparent;
+}
+.el-table th.el-table__cell {
+  font-family: var(--oj-font-display);
+  font-size: var(--oj-fs-sm);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--oj-line) !important;
+}
+.el-table td.el-table__cell { border-bottom: 1px solid var(--oj-line-soft) !important; }
+.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell {
+  background: color-mix(in oklab, var(--oj-ink) 2.4%, var(--oj-surface));
+}
+.el-table__body tr { transition: background-color var(--oj-dur-1) var(--oj-ease); }
+.el-table::before, .el-table__inner-wrapper::before { display: none; }
+
+/* 标签：方角、无边框、纯色浅底 */
+.el-tag {
+  border-radius: var(--oj-r1);
+  border: none;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.el-tag--small { height: 20px; padding: 0 6px; }
+
+/* 弹层与对话框 */
+.el-dialog {
+  border-radius: var(--oj-r3);
+  box-shadow: var(--oj-shadow-3);
+  border: 1px solid var(--oj-line);
+}
+.el-dialog__header { margin-right: 0; padding: var(--oj-s4) var(--oj-s5) var(--oj-s3); border-bottom: 1px solid var(--oj-line-soft); }
+.el-dialog__title { font-family: var(--oj-font-display); font-weight: 600; font-size: var(--oj-fs-lg); letter-spacing: -0.01em; }
+.el-dialog__body { padding: var(--oj-s5); color: var(--oj-ink-2); }
+.el-dialog__footer { padding: var(--oj-s3) var(--oj-s5) var(--oj-s4); border-top: 1px solid var(--oj-line-soft); }
+.el-overlay { backdrop-filter: blur(2px); }
+
+.el-popper, .el-dropdown__popper, .el-select__popper {
+  border-radius: var(--oj-r3);
+  border: 1px solid var(--oj-line);
+  box-shadow: var(--oj-shadow-2);
+}
+.el-dropdown-menu__item { border-radius: var(--oj-r1); margin: 0 4px; font-size: var(--oj-fs-md); }
+
+/* 卡片：默认去掉重阴影，交给线与底色 */
+.el-card {
+  border-radius: var(--oj-r3);
+  border: 1px solid var(--oj-line);
+  box-shadow: none;
+  background: var(--oj-surface);
+}
+.el-card__header { border-bottom: 1px solid var(--oj-line-soft); padding: var(--oj-s3) var(--oj-s4); }
+
+/* 分页 / 空态 / 骨架 */
+.el-pagination { --el-pagination-button-bg-color: transparent; font-variant-numeric: tabular-nums; }
+.el-pagination.is-background .el-pager li { border-radius: var(--oj-r1); }
+.el-empty__description { color: var(--oj-ink-3); font-size: var(--oj-fs-md); }
+.el-skeleton__item { background: linear-gradient(90deg, var(--oj-surface-2) 25%, var(--oj-surface-3) 37%, var(--oj-surface-2) 63%); background-size: 400% 100%; }
+.el-loading-mask { background-color: color-mix(in oklab, var(--oj-paper) 72%, transparent); backdrop-filter: blur(1px); }
+
+/* 导航菜单（管理端侧栏等仍在用） */
+.el-menu { border-right: none; background: transparent; }
+.el-menu-item, .el-sub-menu__title { border-radius: var(--oj-r1); font-size: var(--oj-fs-md); }
+.el-menu--horizontal > .el-menu-item {
+  border-bottom: 2px solid transparent;
+  font-weight: 500;
+  transition: color var(--oj-dur-2) var(--oj-ease), border-color var(--oj-dur-2) var(--oj-ease);
+}
+.el-menu--horizontal > .el-menu-item.is-active { border-bottom-color: var(--oj-accent); }
+
+/* 标签页 */
+.el-tabs__item { font-family: var(--oj-font-display); letter-spacing: 0.01em; }
+.el-tabs__active-bar { background-color: var(--oj-accent); }
+.el-tabs__nav-wrap::after { background-color: var(--oj-line); height: 1px; }
+
+/* 描述列表 / 时间线 / 开关等零散件 */
+.el-descriptions__label { color: var(--oj-ink-3) !important; font-weight: 500 !important; }
+.el-switch.is-checked .el-switch__core { background-color: var(--oj-accent); border-color: var(--oj-accent); }
+.el-radio__input.is-checked .el-radio__inner,
+.el-checkbox__input.is-checked .el-checkbox__inner { background-color: var(--oj-accent); border-color: var(--oj-accent); }
+.el-checkbox__label, .el-radio__label { font-size: var(--oj-fs-md); }
+.el-progress-bar__inner { background-color: var(--oj-accent); }
+.el-alert { border-radius: var(--oj-r3); }
+.el-avatar { border-radius: var(--oj-r2); }
+
+/* 代码编辑器容器（Monaco）外框统一 */
+.el-scrollbar__bar { z-index: 4; }
+
+/* ------------------------------------------------------ 5. 题面 Markdown */
+.markdown {
+  line-height: 1.8;
+  font-size: var(--oj-fs-lg);
+  color: var(--oj-ink);
+  overflow-wrap: break-word;
+}
+.markdown h1, .markdown h2, .markdown h3 {
+  margin: 1.6em 0 0.6em;
+  padding-bottom: 0.25em;
+  letter-spacing: -0.012em;
+}
+.markdown h2 { font-size: 1.25em; border-bottom: 1px solid var(--oj-line); }
+.markdown h3 { font-size: 1.1em; }
+.markdown h1:first-child, .markdown h2:first-child, .markdown h3:first-child { margin-top: 0; }
+.markdown p, .markdown ul, .markdown ol, .markdown pre, .markdown blockquote { margin: 0.75em 0; }
+.markdown ul, .markdown ol { padding-left: 1.4em; }
+.markdown li { margin: 0.25em 0; }
+.markdown li::marker { color: var(--oj-ink-4); }
+
+.markdown pre {
+  background: var(--oj-surface-2);
+  border: 1px solid var(--oj-line);
+  border-left: 2px solid var(--oj-line-strong);
+  border-radius: var(--oj-r2);
+  padding: var(--oj-s3) var(--oj-s4);
+  overflow-x: auto;
+  font-family: var(--oj-font-mono);
+  font-size: var(--oj-fs-md);
+  line-height: 1.65;
+}
+.markdown code {
+  font-family: var(--oj-font-mono);
+  font-size: 0.9em;
+  background: var(--oj-surface-3);
+  padding: 1px 5px;
+  border-radius: var(--oj-r1);
+  color: var(--oj-accent-deep);
+}
+.markdown pre code { padding: 0; background: none; color: var(--oj-ink); font-size: var(--oj-fs-md); }
+
+.markdown blockquote {
+  border-left: 2px solid var(--oj-accent);
+  background: color-mix(in oklab, var(--oj-accent) 4%, transparent);
+  padding: var(--oj-s2) var(--oj-s4);
+  color: var(--oj-ink-2);
+  border-radius: 0 var(--oj-r2) var(--oj-r2) 0;
+}
+.markdown table { border-collapse: collapse; margin: 1em 0; font-size: var(--oj-fs-md); display: block; overflow-x: auto; }
+.markdown th, .markdown td { border: 1px solid var(--oj-line); padding: 6px 12px; }
+.markdown th { background: var(--oj-surface-2); font-weight: 600; text-align: left; }
+.markdown img { max-width: 100%; border-radius: var(--oj-r2); }
+.markdown hr { border: 0; border-top: 1px solid var(--oj-line); margin: 1.5em 0; }
+
+/* 代码块复制按钮 */
+.markdown .code-block { position: relative; }
+.markdown .code-block pre { margin: 0; }
+.code-copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  padding: 2px 10px;
+  font-family: var(--oj-font-display);
+  font-size: var(--oj-fs-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1.7;
+  color: var(--oj-ink-3);
+  background: var(--oj-surface);
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r1);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity var(--oj-dur-2) var(--oj-ease),
+              transform var(--oj-dur-2) var(--oj-ease),
+              color var(--oj-dur-1) var(--oj-ease),
+              border-color var(--oj-dur-1) var(--oj-ease);
+}
+.code-block:hover .code-copy-btn { opacity: 1; transform: translateY(0); }
+.code-copy-btn:hover { color: var(--oj-accent); border-color: color-mix(in oklab, var(--oj-accent) 45%, transparent); }
+.code-copy-btn.copied { color: var(--oj-ac); border-color: color-mix(in oklab, var(--oj-ac) 45%, transparent); }
+@media (hover: none) { .code-copy-btn { opacity: 1; transform: none; } }
+
+.markdown .katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
+
+/* ------------------------------------------------------------- 6. 动效 */
+@keyframes oj-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes oj-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes oj-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.oj-rise { animation: oj-rise var(--oj-dur-3) var(--oj-ease) both; }
+.oj-fade { animation: oj-fade var(--oj-dur-3) var(--oj-ease) both; }
+/* 判题中：呼吸而非转圈 */
+.oj-pending { animation: oj-pulse 1.4s ease-in-out infinite; }
+
+/* 路由切换过渡 */
+.route-fade-enter-active { transition: opacity var(--oj-dur-2) var(--oj-ease), transform var(--oj-dur-2) var(--oj-ease); }
+.route-fade-leave-active { transition: opacity 100ms var(--oj-ease); }
+.route-fade-enter-from { opacity: 0; transform: translateY(4px); }
+.route-fade-leave-to { opacity: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ------------------------------------------------------- 7. 暗色（跟随系统） */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --oj-paper:       oklch(20.5% 0.014 264);
+    --oj-paper-sunk:  oklch(17.5% 0.014 264);
+    --oj-surface:     oklch(24% 0.016 264);
+    --oj-surface-2:   oklch(27% 0.016 264);
+    --oj-surface-3:   oklch(30.5% 0.016 264);
+
+    --oj-ink:         oklch(93% 0.010 264);
+    --oj-ink-2:       oklch(78% 0.012 264);
+    --oj-ink-3:       oklch(64% 0.012 264);
+    --oj-ink-4:       oklch(50% 0.012 264);
+
+    --oj-line:        oklch(33% 0.014 264);
+    --oj-line-soft:   oklch(29% 0.014 264);
+    --oj-line-strong: oklch(40% 0.016 264);
+
+    --oj-accent:      oklch(66% 0.165 36);
+    --oj-accent-deep: oklch(74% 0.150 40);
+    --oj-jade:        oklch(70% 0.100 172);
+
+    --oj-ac-soft:   oklch(30% 0.040 156);
+    --oj-warn-soft: oklch(31% 0.045 78);
+    --oj-fail-soft: oklch(30% 0.045 27);
+    --oj-idle-soft: oklch(30% 0.010 264);
+    --oj-info-soft: oklch(30% 0.030 250);
+
+    --oj-shadow-1: 0 1px 2px oklch(0% 0 0 / 0.4);
+    --oj-shadow-2: 0 8px 24px -12px oklch(0% 0 0 / 0.6);
+    --oj-shadow-3: 0 24px 60px -28px oklch(0% 0 0 / 0.75);
+
+    /* Element Plus 在暗色下的派生色需向黑侧混合 */
+    --el-color-primary-light-3: color-mix(in oklab, var(--oj-accent) 72%, black);
+    --el-color-primary-light-5: color-mix(in oklab, var(--oj-accent) 50%, black);
+    --el-color-primary-light-7: color-mix(in oklab, var(--oj-accent) 26%, black);
+    --el-color-primary-light-8: color-mix(in oklab, var(--oj-accent) 18%, black);
+    --el-color-primary-light-9: color-mix(in oklab, var(--oj-accent) 12%, black);
+    --el-color-success-light-9: color-mix(in oklab, var(--oj-ac) 12%, black);
+    --el-color-warning-light-9: color-mix(in oklab, var(--oj-warn) 12%, black);
+    --el-color-danger-light-9: color-mix(in oklab, var(--oj-fail) 12%, black);
+    --el-color-info-light-9: color-mix(in oklab, var(--oj-idle) 12%, black);
+    --el-color-success-light-8: color-mix(in oklab, var(--oj-ac) 18%, black);
+    --el-color-warning-light-8: color-mix(in oklab, var(--oj-warn) 18%, black);
+    --el-color-danger-light-8: color-mix(in oklab, var(--oj-fail) 18%, black);
+    --el-color-info-light-8: color-mix(in oklab, var(--oj-idle) 18%, black);
+    --el-mask-color: oklch(0% 0 0 / 0.55);
+    --el-bg-color-page: var(--oj-paper);
+  }
+  .el-table__body tr.el-table__row--striped td.el-table__cell {
+    background: color-mix(in oklab, white 3.5%, var(--oj-surface));
+  }
+  .markdown pre { background: var(--oj-paper-sunk); }
+}
+
+
+/* ------------------------------------------------- 8. 全局悬停微交互 */
+/* 统一在各页面之上补一层「鼠标悬停动画」，避免逐页重复定义 */
+:root {
+  --el-table-row-hover-bg-color: var(--oj-surface-2);
+  --el-table-header-bg-color: var(--oj-surface-2);
+}
+
+/* 按钮：悬停轻微上浮 + 阴影，按下回落 */
+.el-button {
+  transition: background-color var(--oj-dur-1) var(--oj-ease),
+              border-color var(--oj-dur-1) var(--oj-ease),
+              color var(--oj-dur-1) var(--oj-ease),
+              transform var(--oj-dur-1) var(--oj-ease),
+              box-shadow var(--oj-dur-2) var(--oj-ease);
+}
+.el-button:not(.is-disabled):not(.is-loading):not(.is-text):not(.is-link):hover {
+  transform: translateY(-1px);
+  box-shadow: var(--oj-shadow-1);
+}
+.el-button:not(.is-disabled):not(.is-loading):not(.is-text):not(.is-link):active {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+/* 表格：行悬停底色 + 表格内按钮不位移（避免整行抖动） */
+.el-table__body tr.el-table__row {
+  transition: background var(--oj-dur-1) var(--oj-ease);
+}
+.el-table__body tr.el-table__row:hover > td.el-table__cell {
+  background: var(--oj-surface-2);
+}
+.el-table__body .el-button:hover { transform: none; box-shadow: none; }
+.el-table__header-wrapper th.el-table__cell { border-bottom-color: var(--oj-line); }
+
+/* 表格单元里的可点链接 / 题号 */
+.el-table__body .cell .oj-cell-link {
+  transition: color var(--oj-dur-1) var(--oj-ease),
+              text-decoration-color var(--oj-dur-1) var(--oj-ease);
+}
+
+/* 分页、下拉项、标签页、开关等控件统一缓动 */
+.el-pagination button,
+.el-pagination li,
+.el-pagination .el-pager li {
+  transition: background var(--oj-dur-1) var(--oj-ease),
+              color var(--oj-dur-1) var(--oj-ease);
+}
+.el-select-dropdown__item,
+.el-dropdown-menu__item {
+  transition: background var(--oj-dur-1) var(--oj-ease),
+              color var(--oj-dur-1) var(--oj-ease),
+              padding-left var(--oj-dur-1) var(--oj-ease);
+}
+.el-select-dropdown__item.is-hovering,
+.el-dropdown-menu__item:not(.is-disabled):hover { padding-left: 22px; }
+.el-tabs__item,
+.el-radio-button__inner,
+.el-checkbox__label { transition: color var(--oj-dur-1) var(--oj-ease),
+                                              background var(--oj-dur-1) var(--oj-ease),
+                                              border-color var(--oj-dur-1) var(--oj-ease); }
+
+/* 对话框：进出更轻，标题区不抖动 */
+.el-dialog { transition: transform var(--oj-dur-2) var(--oj-ease); }
+.el-dialog__header { border-bottom: 1px solid var(--oj-line-soft); }
+.el-dialog__body { padding-top: var(--oj-s4); }
+
+/* 可点文字链接：下划线由左向右展开 */
+.oj-underline-link {
+  position: relative;
+  text-decoration: none;
+  color: inherit;
+}
+.oj-underline-link::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: -2px;
+  width: 100%;
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform var(--oj-dur-2) var(--oj-ease);
+}
+.oj-underline-link:hover::after { transform: scaleX(1); }
+
+/* 通用可悬停卡片（页面自有的卡片类仍可覆盖） */
+.oj-hoverable {
+  transition: border-color var(--oj-dur-2) var(--oj-ease),
+              box-shadow var(--oj-dur-2) var(--oj-ease),
+              transform var(--oj-dur-2) var(--oj-ease);
+}
+.oj-hoverable:hover {
+  border-color: var(--oj-line-strong);
+  box-shadow: var(--oj-shadow-2);
+  transform: translateY(-2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .el-button:not(.is-disabled):hover,
+  .oj-hoverable:hover { transform: none; }
+}
+
+/* --------------------------------------------- 9. 页面标题区 / 分页行 */
+.page-head .head-titles { display: flex; flex-direction: column; gap: 2px; }
+.head-titles h2 { margin: 0; font-size: 26px; letter-spacing: -0.02em; }
+.head-ops { display: flex; align-items: center; gap: var(--oj-s2); flex-wrap: wrap; }
+.pager-row { display: flex; justify-content: flex-end; padding: var(--oj-s3) 0; }

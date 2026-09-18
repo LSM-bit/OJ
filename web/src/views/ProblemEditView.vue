@@ -8,7 +8,10 @@
 <template>
   <div class="page">
     <div class="page-head">
-      <h2>{{ isEdit ? `编辑题目 ${detail?.display_id ? '#' + detail.display_id : ''}` : '创建题目' }}</h2>
+      <div class="head-titles">
+        <span class="oj-kicker">Problem · Edit</span>
+        <h2>{{ isEdit ? `编辑题目 ${detail?.display_id ? '#' + detail.display_id : ''}` : '创建题目' }}</h2>
+      </div>
       <div>
         <el-button v-if="isEdit" size="small" :icon="MagicStick" @click="aiReview">AI 审校</el-button>
         <el-button v-if="isEdit" size="small" @click="$router.push(`/problems/${pid}`)">查看题目</el-button>
@@ -104,7 +107,7 @@
       <h4 v-if="casesInfo.samples?.length" class="case-sec-title">
         样例（题面可见，{{ casesInfo.samples.length }} 个）
       </h4>
-      <el-table v-if="casesInfo.samples?.length" :data="casesInfo.samples" size="small" class="cases-table">
+      <el-table v-if="casesInfo.samples?.length" :data="pagedSamples" size="small" class="cases-table">
         <el-table-column prop="idx" label="#" width="60" />
         <el-table-column prop="case_id" label="用例 ID" width="100" />
         <el-table-column label="输入预览" min-width="200">
@@ -123,12 +126,17 @@
           </template>
         </el-table-column>
       </el-table>
+      <div v-if="samplesTotal > samplesPageSize" class="pager-row">
+        <el-pagination class="pager" layout="total, prev, pager, next"
+                       :total="samplesTotal" :page-size="samplesPageSize"
+                       v-model:current-page="samplesPage" />
+      </div>
 
       <!-- 隐藏用例 -->
       <h4 v-if="casesInfo.cases?.length" class="case-sec-title">
         隐藏用例（仅判题使用，{{ casesInfo.cases.length }} 个）
       </h4>
-      <el-table v-if="casesInfo.cases?.length" :data="casesInfo.cases" size="small" class="cases-table">
+      <el-table v-if="casesInfo.cases?.length" :data="pagedCases" size="small" class="cases-table">
         <el-table-column prop="idx" label="#" width="60" />
         <el-table-column prop="case_id" label="用例 ID" width="100" />
         <el-table-column label="输入预览" min-width="200">
@@ -147,6 +155,11 @@
           </template>
         </el-table-column>
       </el-table>
+      <div v-if="casesTotal > casesPageSize" class="pager-row">
+        <el-pagination class="pager" layout="total, prev, pager, next"
+                       :total="casesTotal" :page-size="casesPageSize"
+                       v-model:current-page="casesPage" />
+      </div>
 
       <el-empty v-if="!casesInfo.has_data"
                 description="请添加样例/隐藏用例，或上传 zip 数据包（成对的 *.in + *.out）" />
@@ -207,7 +220,7 @@
                             ? `全部通过（${verifyResult.passed}/${verifyResult.total}）`
                             : `未全部通过（${verifyResult.passed}/${verifyResult.total}）`"
                           style="margin-bottom:10px" />
-                <el-table :data="verifyResult.cases" size="small" border class="verify-table">
+                <el-table :data="pagedVerifyCases" size="small" border class="verify-table">
                   <el-table-column prop="idx" label="#" width="48" />
                   <el-table-column prop="case_id" label="用例" width="88" />
                   <el-table-column label="结果" width="96">
@@ -225,6 +238,11 @@
                     </template>
                   </el-table-column>
                 </el-table>
+                <div v-if="verifyCasesTotal > verifyCasesPageSize" class="pager-row">
+                  <el-pagination class="pager" layout="total, prev, pager, next"
+                                 :total="verifyCasesTotal" :page-size="verifyCasesPageSize"
+                                 v-model:current-page="verifyCasesPage" />
+                </div>
               </div>
             </template>
           </CodeWorkbench>
@@ -301,6 +319,7 @@ import { api } from '../api/client'
 import { Plus, MagicStick } from '@element-plus/icons-vue'
 import CodeWorkbench from '../components/CodeWorkbench.vue'
 import TagPicker from '../components/TagPicker.vue'
+import { useClientPager } from '../composables/useClientPager'
 import { useAssistantStore } from '../stores/assistant'
 
 const DIFF = ['', '入门', '简单', '中等', '较难', '困难']
@@ -358,6 +377,14 @@ const solution = ref({ language: 'python3.12', code: '' })
 const solWbRef = ref<InstanceType<typeof CodeWorkbench> | null>(null)
 const verifying = ref(false)
 const verifyResult = ref<any>(null)
+
+// 用例数量可能很多（成百上千）：三处用例表统一预留分页
+const { page: samplesPage, size: samplesPageSize, total: samplesTotal, paged: pagedSamples } =
+  useClientPager(computed<any[]>(() => casesInfo.value?.samples ?? []), 20)
+const { page: casesPage, size: casesPageSize, total: casesTotal, paged: pagedCases } =
+  useClientPager(computed<any[]>(() => casesInfo.value?.cases ?? []), 20)
+const { page: verifyCasesPage, size: verifyCasesPageSize, total: verifyCasesTotal, paged: pagedVerifyCases } =
+  useClientPager(computed<any[]>(() => verifyResult.value?.cases ?? []), 20)
 const publishing = ref(false)
 
 function onFileChange(e: Event) {
@@ -553,14 +580,14 @@ async function publish(isPublic: boolean) {
   min-width: 380px;
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 8px;
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
   overflow: hidden;
-  background: #fff;
+  background: var(--oj-surface);
 }
 .desc-tabs {
   padding: 8px 12px;
-  border-bottom: 1px solid var(--el-border-color-lighter);
+  border-bottom: 1px solid var(--oj-line-soft);
 }
 .desc-editor { flex: 1; height: 100%; }
 .desc-editor :deep(.el-textarea__inner) {
@@ -574,7 +601,7 @@ async function publish(isPublic: boolean) {
   overflow-y: auto;
   padding: 12px 16px;
 }
-.unit { margin-left: 8px; color: var(--el-text-color-secondary); }
+.unit { margin-left: 8px; color: var(--oj-ink-3); }
 
 /* 第 2 步 */
 .cases-toolbar {
@@ -583,7 +610,7 @@ async function publish(isPublic: boolean) {
   gap: 12px;
   margin-bottom: 12px;
 }
-.cases-meta { font-size: 13px; color: var(--el-text-color-secondary); }
+.cases-meta { font-size: 13px; color: var(--oj-ink-3); }
 .cases-meta.warn { color: var(--el-color-warning); }
 .cases-table { width: 100%; }
 .io-preview {
@@ -594,8 +621,8 @@ async function publish(isPublic: boolean) {
   word-break: break-all;
   max-height: 120px;
   overflow-y: auto;
-  background: var(--el-fill-color-light);
-  border-radius: 4px;
+  background: var(--oj-surface-2);
+  border-radius: var(--oj-r2);
   padding: 6px 8px;
 }
 
@@ -609,9 +636,9 @@ async function publish(isPublic: boolean) {
 .pane {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 8px;
-  background: #fff;
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
+  background: var(--oj-surface);
   overflow: hidden;
 }
 .pane-left { flex: 1; min-width: 320px; }
@@ -619,7 +646,7 @@ async function publish(isPublic: boolean) {
 .pane-head {
   flex-shrink: 0;
   padding: 10px 16px;
-  border-bottom: 1px solid var(--el-border-color-lighter);
+  border-bottom: 1px solid var(--oj-line-soft);
   font-weight: 600;
   white-space: nowrap;
 }
@@ -628,12 +655,12 @@ async function publish(isPublic: boolean) {
   overflow-y: auto;
   padding: 12px 16px;
 }
-.limits { color: var(--el-text-color-secondary); font-size: 13px; margin-top: 0; }
+.limits { color: var(--oj-ink-3); font-size: 13px; margin-top: 0; }
 .samples-title { margin: 18px 0 8px; }
 .sample-block { margin-bottom: 12px; }
 .sample-label {
   font-size: 12px;
-  color: var(--el-text-color-secondary);
+  color: var(--oj-ink-3);
   margin: 6px 0 4px;
 }
 .sample-pre {
@@ -643,9 +670,9 @@ async function publish(isPublic: boolean) {
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-all;
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 6px;
+  background: var(--oj-surface-2);
+  border: 1px solid var(--oj-line-soft);
+  border-radius: var(--oj-r2);
   padding: 8px 10px;
   max-height: 200px;
   overflow-y: auto;
@@ -653,7 +680,7 @@ async function publish(isPublic: boolean) {
 /* 验证结果：固定高度面板，内部滚动 */
 .verify-result {
   flex-shrink: 0;
-  border-top: 1px solid var(--el-border-color-lighter);
+  border-top: 1px solid var(--oj-line-soft);
   padding: 10px 12px;
   max-height: 260px;
   overflow-y: auto;
@@ -667,8 +694,8 @@ async function publish(isPublic: boolean) {
   word-break: break-all;
   max-height: 80px;
   overflow-y: auto;
-  background: var(--el-fill-color-light);
-  border-radius: 4px;
+  background: var(--oj-surface-2);
+  border-radius: var(--oj-r2);
   padding: 6px 8px;
 }
 
@@ -680,12 +707,129 @@ async function publish(isPublic: boolean) {
   gap: 10px;
 }
 .case-sec-title { margin: 6px 0 8px; }
-.data-hint { font-size: 13px; color: var(--el-text-color-secondary); margin-top: 0; }
+.data-hint { font-size: 13px; color: var(--oj-ink-3); margin-top: 0; }
 .add-case-grid { display: flex; gap: 12px; }
 .add-case-grid > div { flex: 1; }
 .add-case-label {
   font-size: 13px;
-  color: var(--el-text-color-secondary);
+  color: var(--oj-ink-3);
   margin-bottom: 4px;
 }
+/* ===== 视觉刷新：统一页面骨架（追加层，保证同特异性下胜出） ===== */
+.page {
+  padding: var(--oj-s5) var(--oj-s6) var(--oj-s8);
+  box-sizing: border-box;
+}
+.page-head,
+.head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--oj-s3);
+  padding-bottom: var(--oj-s3);
+  border-bottom: 1px solid var(--oj-line);
+  margin-bottom: var(--oj-s5);
+}
+.page-head h2,
+.page-title {
+  margin: 0;
+  font-size: 24px;
+  letter-spacing: -0.02em;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--oj-s2);
+  padding-bottom: var(--oj-s3);
+  border-bottom: 1px solid var(--oj-line);
+  margin-bottom: var(--oj-s4);
+}
+.spacer { flex: 1; }
+.mono-id,
+.mono {
+  font-family: var(--oj-font-mono);
+  font-size: var(--oj-fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--oj-ink-3);
+}
+.muted,
+.tip,
+.pick-hint,
+.form-tip,
+.data-hint,
+.err-msg {
+  color: var(--oj-ink-3);
+  font-size: var(--oj-fs-sm);
+}
+.section { margin-top: var(--oj-s6); }
+.section h4 {
+  margin: 0 0 var(--oj-s3);
+  font-size: var(--oj-fs-lg);
+}
+.stat-card {
+  padding: var(--oj-s4) var(--oj-s5);
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
+  background: var(--oj-surface);
+  transition: border-color var(--oj-dur-2) var(--oj-ease),
+              box-shadow var(--oj-dur-2) var(--oj-ease),
+              transform var(--oj-dur-2) var(--oj-ease);
+}
+.stat-card:hover {
+  border-color: var(--oj-line-strong);
+  box-shadow: var(--oj-shadow-1);
+  transform: translateY(-1px);
+}
+.stat-value {
+  font-family: var(--oj-font-mono);
+  font-size: 26px;
+  letter-spacing: -0.02em;
+  color: var(--oj-ink);
+}
+.stat-label {
+  margin-top: 4px;
+  color: var(--oj-ink-3);
+  font-size: var(--oj-fs-sm);
+}
+.pager {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--oj-s3) 0;
+}
+.click-table,
+.fill-table,
+.cases-table,
+.verify-table,
+.log-list {
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
+  overflow: hidden;
+}
+
+/* 题面/竞赛的左右分栏 */
+.pane-head {
+  padding: var(--oj-s3) var(--oj-s4);
+  border-bottom: 1px solid var(--oj-line);
+}
+.pane-body { padding: var(--oj-s4) var(--oj-s5); }
+.limits {
+  font-family: var(--oj-font-mono);
+  font-size: var(--oj-fs-sm);
+  color: var(--oj-ink-3);
+}
+.sample-block {
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r2);
+  overflow: hidden;
+  transition: border-color var(--oj-dur-2) var(--oj-ease);
+}
+.sample-block:hover { border-color: var(--oj-line-strong); }
+.samples-title,
+.sample-label {
+  font-size: var(--oj-fs-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--oj-ink-4);
+}
+.sample-pre { font-family: var(--oj-font-mono); }
 </style>

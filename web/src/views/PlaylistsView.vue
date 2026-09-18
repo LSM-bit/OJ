@@ -6,47 +6,60 @@
 <template>
   <div class="page">
     <template v-if="!current">
-      <div class="page-head">
-        <h2>题单</h2>
+      <header class="page-head">
+        <div class="head-titles">
+          <span class="oj-kicker">Playlists</span>
+          <h2>题单</h2>
+        </div>
         <el-button type="primary" size="small" @click="showCreate = true">创建题单</el-button>
-      </div>
+      </header>
 
       <el-empty v-if="!loading && playlists.length === 0" description="暂无可见题单" />
 
       <div class="pl-list">
-        <div v-for="pl in playlists" :key="pl.id" class="pl-card" @click="open(pl)">
+        <div v-for="pl in pagedPlaylists" :key="pl.id" class="pl-card" @click="open(pl)">
           <div class="pl-title-row">
             <span class="pl-title">{{ pl.title }}</span>
-            <el-tag size="small" :type="pl.is_public ? 'success' : 'info'">
+            <el-tag size="small" effect="plain" :type="pl.is_public ? 'success' : 'info'">
               {{ pl.is_public ? '公开' : '私有' }}
             </el-tag>
           </div>
           <p class="pl-desc">{{ pl.description || '暂无简介' }}</p>
         </div>
       </div>
+
+      <div class="pager-row">
+        <el-pagination v-if="playlists.length > pageSize" class="pager"
+                       layout="total, prev, pager, next"
+                       :total="playlists.length" :page-size="pageSize"
+                       v-model:current-page="page" />
+      </div>
     </template>
 
     <!-- 题单详情 -->
     <template v-else>
-      <div class="page-head">
-        <div>
-          <el-button size="small" text @click="backToList">← 返回</el-button>
-          <span class="d-title">{{ current.title }}</span>
-          <el-tag size="small" :type="current.is_public ? 'success' : 'info'" style="margin-left:8px">
-            {{ current.is_public ? '公开' : '私有' }}
-          </el-tag>
+      <header class="page-head">
+        <div class="head-titles">
+          <el-button size="small" text class="back" @click="backToList">← 返回题单</el-button>
+          <div class="title-line">
+            <h2 class="d-title">{{ current.title }}</h2>
+            <el-tag size="small" effect="plain"
+                    :type="current.is_public ? 'success' : 'info'">
+              {{ current.is_public ? '公开' : '私有' }}
+            </el-tag>
+          </div>
         </div>
         <div class="head-right">
           <span class="progress-label">
-            已完成 {{ solvedCount }} / {{ current.problems?.length ?? 0 }}
+            已完成 <b>{{ solvedCount }}</b> / {{ current.problems?.length ?? 0 }}
           </span>
           <el-button v-if="canManage" size="small" type="primary"
                      @click="openEdit">编辑题单</el-button>
           <el-button v-if="canManage" size="small" type="danger" plain
                      @click="removeCurrent">删除题单</el-button>
         </div>
-      </div>
-      <el-table :data="current.problems ?? []" stripe>
+      </header>
+      <el-table :data="pagedCurrentProblems" stripe class="detail-table">
         <el-table-column label="状态" width="80" align="center">
           <template #default="{ row }">
             <el-icon v-if="solvedIds.includes(row.problem_id)" color="var(--el-color-success)">
@@ -72,6 +85,11 @@
           </template>
         </el-table-column>
       </el-table>
+      <div v-if="currentProblemsTotal > currentProblemsPageSize" class="pager-row">
+        <el-pagination class="pager" layout="total, prev, pager, next"
+                       :total="currentProblemsTotal" :page-size="currentProblemsPageSize"
+                       v-model:current-page="currentProblemsPage" />
+      </div>
     </template>
 
     <!-- 创建题单 -->
@@ -117,22 +135,27 @@
         </el-form-item>
         <el-form-item label="题目列表">
           <div class="edit-problems">
-            <div v-for="(pid, i) in editForm.problem_ids" :key="pid" class="ep-row">
-              <span class="ep-idx">{{ i + 1 }}.</span>
+            <div v-for="(pid, i) in pagedEditProblems" :key="pid" class="ep-row">
+              <span class="ep-idx">{{ editProblemOffset + i + 1 }}.</span>
               <span class="ep-title">{{ problemTitle(pid) }}</span>
-              <el-button size="small" text :disabled="i === 0" @click="moveUp(i)">↑</el-button>
-              <el-button size="small" text :disabled="i === editForm.problem_ids.length - 1"
-                         @click="moveDown(i)">↓</el-button>
-              <el-button size="small" text type="danger" @click="removeProblem(i)">移除</el-button>
+              <el-button size="small" text :disabled="editProblemOffset + i === 0"
+                         @click="moveUp(editProblemOffset + i)">↑</el-button>
+              <el-button size="small" text
+                         :disabled="editProblemOffset + i === editForm.problem_ids.length - 1"
+                         @click="moveDown(editProblemOffset + i)">↓</el-button>
+              <el-button size="small" text type="danger"
+                         @click="removeProblem(editProblemOffset + i)">移除</el-button>
+            </div>
+            <div v-if="editProblemsTotal > editProblemsPageSize" class="pager-row">
+              <el-pagination class="pager" layout="total, prev, pager, next"
+                             :total="editProblemsTotal" :page-size="editProblemsPageSize"
+                             v-model:current-page="editProblemsPage" />
             </div>
             <el-empty v-if="editForm.problem_ids.length === 0" description="暂无题目"
                       :image-size="50" />
             <div class="ep-add">
-              <el-select v-model="addProblemId" filterable placeholder="搜索并添加题目"
-                         style="flex:1" @change="addProblem">
-                <el-option v-for="p in allProblems" :key="p.id"
-                           :label="`${p.display_id}. ${p.title}`" :value="p.id" />
-              </el-select>
+              <el-button size="small" @click="openChoose">＋ 添加题目</el-button>
+              <span class="ep-hint">从题库搜索并选择，可连续添加多题</span>
             </div>
           </div>
         </el-form-item>
@@ -140,6 +163,30 @@
       <template #footer>
         <el-button @click="showEdit = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="saveEdit">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 选择题目：题库量大，独立弹窗内搜索 + 点选（已选中的点一下即移除） -->
+    <el-dialog v-model="showChoose" title="添加题目" width="560" append-to-body>
+      <el-input v-model="chooseKw" placeholder="输入题名 / 题号搜索" clearable />
+      <p class="choose-tip">已选 {{ editForm.problem_ids.length }} 题 · 点击题目加入或移除</p>
+      <div class="filter-list">
+        <div v-for="p in pagedChooseList" :key="p.id" class="filter-item"
+             :class="{ 'is-active': editForm.problem_ids.includes(p.id) }"
+             @click="toggleProblem(p.id)">
+          <span class="fi-id">{{ p.display_id }}</span>
+          <span class="fi-title">{{ p.title }}</span>
+          <span class="fi-mark">{{ editForm.problem_ids.includes(p.id) ? '已选' : '＋' }}</span>
+        </div>
+        <el-empty v-if="chooseList.length === 0" description="无匹配题目" :image-size="60" />
+        <div v-if="chooseTotal > choosePageSize" class="pager-row">
+          <el-pagination class="pager" layout="total, prev, pager, next"
+                         :total="chooseTotal" :page-size="choosePageSize"
+                         v-model:current-page="choosePage" />
+        </div>
+      </div>
+      <template #footer>
+        <el-button type="primary" @click="showChoose = false">完成</el-button>
       </template>
     </el-dialog>
   </div>
@@ -152,6 +199,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { CircleCheckFilled } from '@element-plus/icons-vue'
 import { api } from '../api/client'
 import { useUserStore } from '../stores/user'
+import { useClientPager } from '../composables/useClientPager'
 
 const route = useRoute()
 const router = useRouter()
@@ -165,11 +213,20 @@ const creating = ref(false)
 const createForm = ref({ title: '', description: '', is_public: false, owner_type: 'user', team_id: null as number | null })
 const current = ref<any>(null)
 
+// 题单内题目可能上百：详情表预留分页
+const { page: currentProblemsPage, size: currentProblemsPageSize,
+  total: currentProblemsTotal, paged: pagedCurrentProblems } =
+  useClientPager(computed<any[]>(() => current.value?.problems ?? []), 20)
+// 列表分页：接口返回全部可见题单，页面内分页展示
+const page = ref(1)
+const pageSize = 8
+const pagedPlaylists = computed(() =>
+  playlists.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+
 // 编辑题单
 const showEdit = ref(false)
 const saving = ref(false)
 const editForm = ref({ title: '', description: '', is_public: false, problem_ids: [] as number[] })
-const addProblemId = ref<number | null>(null)
 
 // 我能否管理当前题单（后端仍是权威校验，这里只是入口展示）
 // 个人题单=本人；团队题单=队长/副队；ADMIN 总是
@@ -224,12 +281,36 @@ function openEdit() {
   showEdit.value = true
 }
 
-function addProblem() {
-  if (addProblemId.value == null) return
-  if (!editForm.value.problem_ids.includes(addProblemId.value)) {
-    editForm.value.problem_ids.push(addProblemId.value)
-  }
-  addProblemId.value = null
+// 选择题目弹窗：把「从题库挑题」从编辑表单内联下拉拆成独立弹窗
+const showChoose = ref(false)
+const chooseKw = ref('')
+
+// 题单可含上百题、题库更大：编辑列表与选题弹窗均预留分页
+const { page: editProblemsPage, size: editProblemsPageSize, total: editProblemsTotal, paged: pagedEditProblems } =
+  useClientPager(computed<any[]>(() => editForm.value.problem_ids), 10)
+const editProblemOffset = computed(() => (editProblemsPage.value - 1) * editProblemsPageSize.value)
+const { page: choosePage, size: choosePageSize, total: chooseTotal, paged: pagedChooseList } =
+  useClientPager(computed<any[]>(() => chooseList.value), 20)
+// 搜索词变化时回到第一页
+watch(chooseKw, () => { choosePage.value = 1 })
+const chooseList = computed(() => {
+  const kw = chooseKw.value.trim().toLowerCase()
+  const list = kw
+    ? allProblems.value.filter((p) => `${p.display_id}. ${p.title}`.toLowerCase().includes(kw))
+    : allProblems.value
+  return list.slice(0, 300)
+})
+
+function openChoose() {
+  chooseKw.value = ''
+  showChoose.value = true
+}
+
+function toggleProblem(pid: number) {
+  const arr = editForm.value.problem_ids
+  const i = arr.indexOf(pid)
+  if (i >= 0) arr.splice(i, 1)
+  else arr.push(pid)
 }
 
 function removeProblem(i: number) {
@@ -277,6 +358,7 @@ const diffTag = (d: number) => (['', 'info', 'success', 'warning', 'danger', 'da
 
 async function load() {
   loading.value = true
+  page.value = 1
   try {
     playlists.value = await api.get('/playlists') as any
     try {
@@ -356,31 +438,87 @@ async function create() {
 <style scoped>
 .page {
   height: 100%;
-  padding: 16px 20px;
+  padding: var(--oj-s5) var(--oj-s6) var(--oj-s8);
   box-sizing: border-box;
   overflow-y: auto;
 }
 .page-head {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
-  margin-bottom: 16px;
+  gap: var(--oj-s4);
+  padding-bottom: var(--oj-s3);
+  border-bottom: 1px solid var(--oj-line);
+  margin-bottom: var(--oj-s5);
 }
-.pl-list { display: flex; flex-direction: column; gap: 10px; }
+.head-titles { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.head-titles h2 { font-size: 26px; letter-spacing: -0.02em; }
+.back { align-self: flex-start; margin-bottom: 2px; color: var(--oj-ink-3); }
+.back:hover { color: var(--oj-accent); }
+.title-line { display: flex; align-items: center; gap: var(--oj-s2); }
+.d-title {
+  margin: 0;
+  font-size: 24px;
+  letter-spacing: -0.02em;
+}
+
+.pl-list { display: flex; flex-direction: column; gap: var(--oj-s3); }
 .pl-card {
-  padding: 14px 18px;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 8px;
-  background: #fff;
+  position: relative;
+  padding: var(--oj-s4) var(--oj-s6) var(--oj-s4) var(--oj-s5);
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
+  background: var(--oj-surface);
   cursor: pointer;
+  transition: border-color var(--oj-dur-2) var(--oj-ease),
+              box-shadow var(--oj-dur-2) var(--oj-ease),
+              transform var(--oj-dur-2) var(--oj-ease);
 }
-.pl-card:hover { box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06); }
-.pl-title-row { display: flex; align-items: center; gap: 10px; }
-.pl-title { font-weight: 600; }
-.pl-desc { color: var(--el-text-color-secondary); font-size: 13px; margin-top: 6px; }
-.d-title { font-size: 17px; font-weight: 700; margin-left: 8px; }
-.head-right { display: flex; align-items: center; gap: 12px; }
-.progress-label { color: var(--el-text-color-secondary); font-size: 13px; }
+/* 悬停时右侧浮出箭头，暗示可进入 */
+.pl-card::after {
+  content: '→';
+  position: absolute;
+  right: var(--oj-s5);
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: var(--oj-fs-lg);
+  color: var(--oj-accent);
+  opacity: 0;
+  transition: opacity var(--oj-dur-2) var(--oj-ease),
+              transform var(--oj-dur-2) var(--oj-ease);
+}
+.pl-card:hover {
+  border-color: var(--oj-line-strong);
+  box-shadow: var(--oj-shadow-1);
+  transform: translateX(2px);
+}
+.pl-card:hover::after { opacity: 1; transform: translateY(-50%) translateX(2px); }
+.pl-title-row { display: flex; align-items: center; gap: var(--oj-s2); }
+.pl-title {
+  font-family: var(--oj-font-display);
+  font-size: var(--oj-fs-lg);
+  font-weight: 600;
+  color: var(--oj-ink);
+}
+.pl-desc {
+  margin-top: 6px;
+  max-width: 72ch;
+  color: var(--oj-ink-3);
+  font-size: var(--oj-fs-md);
+}
+
+.head-right { display: flex; align-items: center; gap: var(--oj-s3); }
+.progress-label { color: var(--oj-ink-3); font-size: var(--oj-fs-md); }
+.progress-label b {
+  font-family: var(--oj-font-mono);
+  font-weight: 600;
+  color: var(--oj-accent);
+}
+.detail-table {
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
+  overflow: hidden;
+}
 
 /* 编辑题单弹窗内的题目列表 */
 .edit-problems { width: 100%; }
@@ -388,13 +526,64 @@ async function create() {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 0;
-  border-bottom: 1px dashed var(--el-border-color-lighter);
+  padding: 5px 0;
+  border-bottom: 1px solid var(--oj-line-soft);
 }
-.ep-idx { width: 30px; color: var(--el-text-color-secondary); }
-.ep-title { flex: 1; font-size: 13px; }
-.ep-add { margin-top: 8px; display: flex; }
-.t-link { color: var(--el-color-primary); text-decoration: none; }
-.t-link:hover { text-decoration: underline; }
-.muted { color: var(--el-text-color-placeholder); }
+.ep-idx {
+  width: 30px;
+  font-family: var(--oj-font-mono);
+  color: var(--oj-ink-4);
+}
+.ep-title { flex: 1; font-size: var(--oj-fs-md); }
+.ep-add { margin-top: var(--oj-s3); display: flex; align-items: center; gap: var(--oj-s3); }
+.ep-hint { color: var(--oj-ink-4); font-size: var(--oj-fs-xs); }
+
+.pager-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--oj-s4) 0 0;
+}
+
+/* 选择题目弹窗 */
+.choose-tip { margin: var(--oj-s3) 0 0; color: var(--oj-ink-3); font-size: var(--oj-fs-sm); }
+.filter-list {
+  margin-top: var(--oj-s2);
+  max-height: 46vh;
+  overflow-y: auto;
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r2);
+}
+.filter-item {
+  display: flex;
+  align-items: center;
+  gap: var(--oj-s3);
+  padding: 8px var(--oj-s4);
+  cursor: pointer;
+  border-bottom: 1px solid var(--oj-line-soft);
+  transition: background var(--oj-dur-1) var(--oj-ease),
+              color var(--oj-dur-1) var(--oj-ease);
+}
+.filter-item:last-child { border-bottom: none; }
+.filter-item:hover { background: var(--oj-surface-2); }
+.filter-item.is-active { background: var(--oj-accent-soft); }
+.filter-item.is-active .fi-title { color: var(--oj-accent); }
+.fi-id {
+  min-width: 54px;
+  font-family: var(--oj-font-mono);
+  font-size: var(--oj-fs-sm);
+  color: var(--oj-ink-4);
+}
+.fi-title { flex: 1; font-size: var(--oj-fs-md); }
+.fi-mark { color: var(--oj-ink-4); font-size: var(--oj-fs-sm); }
+.filter-item.is-active .fi-mark { color: var(--oj-accent); }
+.t-link {
+  font-weight: 500;
+  color: var(--oj-ink);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: color var(--oj-dur-1) var(--oj-ease),
+              border-color var(--oj-dur-1) var(--oj-ease);
+}
+.t-link:hover { color: var(--oj-accent); border-bottom-color: var(--oj-accent); }
+.muted { color: var(--oj-ink-4); }
 </style>

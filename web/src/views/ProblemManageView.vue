@@ -7,7 +7,10 @@
 <template>
   <div class="page">
     <div class="page-head">
-      <h2>出题中心</h2>
+      <div class="head-titles">
+        <span class="oj-kicker">Problems</span>
+        <h2>出题中心</h2>
+      </div>
       <div class="head-actions">
         <el-button type="primary" size="small" @click="$router.push('/problems/new')">
           创建题目
@@ -151,4 +154,121 @@ onMounted(load)
   margin-top: 12px;
   justify-content: flex-end;
 }
+/* ===== 视觉刷新：统一页面骨架（追加层，保证同特异性下胜出） ===== */
+.page {
+  padding: var(--oj-s5) var(--oj-s6) var(--oj-s8);
+  box-sizing: border-box;
+}
+.page-head,
+.head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--oj-s3);
+  padding-bottom: var(--oj-s3);
+  border-bottom: 1px solid var(--oj-line);
+  margin-bottom: var(--oj-s5);
+}
+.page-head h2,
+.page-title {
+  margin: 0;
+  font-size: 24px;
+  letter-spacing: -0.02em;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--oj-s2);
+  padding-bottom: var(--oj-s3);
+  border-bottom: 1px solid var(--oj-line);
+  margin-bottom: var(--oj-s4);
+}
+.spacer { flex: 1; }
+.mono-id,
+.mono {
+  font-family: var(--oj-font-mono);
+  font-size: var(--oj-fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--oj-ink-3);
+}
+.muted,
+.tip,
+.pick-hint,
+.form-tip,
+.data-hint,
+.err-msg {
+  color: var(--oj-ink-3);
+  font-size: var(--oj-fs-sm);
+}
+.section { margin-top: var(--oj-s6); }
+.section h4 {
+  margin: 0 0 var(--oj-s3);
+  font-size: var(--oj-fs-lg);
+}
+.stat-card {
+  padding: var(--oj-s4) var(--oj-s5);
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
+  background: var(--oj-surface);
+  transition: border-color var(--oj-dur-2) var(--oj-ease),
+              box-shadow var(--oj-dur-2) var(--oj-ease),
+              transform var(--oj-dur-2) var(--oj-ease);
+}
+.stat-card:hover {
+  border-color: var(--oj-line-strong);
+  box-shadow: var(--oj-shadow-1);
+  transform: translateY(-1px);
+}
+.stat-value {
+  font-family: var(--oj-font-mono);
+  font-size: 26px;
+  letter-spacing: -0.02em;
+  color: var(--oj-ink);
+}
+.stat-label {
+  margin-top: 4px;
+  color: var(--oj-ink-3);
+  font-size: var(--oj-fs-sm);
+}
+.pager {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--oj-s3) 0;
+}
+.click-table,
+.fill-table,
+.cases-table,
+.verify-table,
+.log-list {
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
+  overflow: hidden;
+}
+
+/* 题面/竞赛的左右分栏 */
+.pane-head {
+  padding: var(--oj-s3) var(--oj-s4);
+  border-bottom: 1px solid var(--oj-line);
+}
+.pane-body { padding: var(--oj-s4) var(--oj-s5); }
+.limits {
+  font-family: var(--oj-font-mono);
+  font-size: var(--oj-fs-sm);
+  color: var(--oj-ink-3);
+}
+.sample-block {
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r2);
+  overflow: hidden;
+  transition: border-color var(--oj-dur-2) var(--oj-ease);
+}
+.sample-block:hover { border-color: var(--oj-line-strong); }
+.samples-title,
+.sample-label {
+  font-size: var(--oj-fs-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--oj-ink-4);
+}
+.sample-pre { font-family: var(--oj-font-mono); }
 </style>

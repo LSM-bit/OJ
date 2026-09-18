@@ -8,7 +8,10 @@
 <template>
   <div class="page">
     <div class="page-head">
-      <h2>创建比赛 · 第 2 步：选择题目</h2>
+      <div class="head-titles">
+        <span class="oj-kicker">Contest · Step 2</span>
+        <h2>创建比赛 · 第 2 步：选择题目</h2>
+      </div>
       <div class="head-actions">
         <el-tag v-if="draftTitle" size="small" effect="plain">比赛：{{ draftTitle }}</el-tag>
         <el-button size="small" @click="$router.push('/contests')">取消</el-button>
@@ -32,12 +35,37 @@
           <el-input v-model="keyword" placeholder="搜索题号 / 标题" clearable
                     :prefix-icon="Search" class="kw-input"
                     @keyup.enter="doSearch" @clear="doSearch" />
-          <el-select v-model="selTags" multiple filterable collapse-tags collapse-tags-tooltip
-                     placeholder="按标签筛选" class="tag-sel" @change="doSearch">
-            <el-option v-for="t in tagCloud" :key="t.tag" :label="`${t.tag} (${t.count})`"
-                       :value="t.tag" />
-          </el-select>
+          <el-button class="tag-filter-btn" @click="tagDialogVisible = true">
+            <el-icon style="margin-right:4px"><Filter /></el-icon>
+            标签筛选
+            <span v-if="selTags.length" class="tag-count">{{ selTags.length }}</span>
+          </el-button>
+          <el-button v-if="selTags.length" link type="primary" @click="clearTags">清除</el-button>
         </div>
+
+        <div v-if="selTags.length" class="picked-tags">
+          <el-tag v-for="t in selTags" :key="t" size="small" closable @close="removeTag(t)">
+            {{ t }}
+          </el-tag>
+        </div>
+
+        <!-- 标签筛选弹窗：标签云多选 -->
+        <el-dialog v-model="tagDialogVisible" title="按标签筛选" width="580" align-center>
+          <el-input v-model="tagKeyword" placeholder="搜索标签" clearable class="tag-search" />
+          <div class="tag-cloud-box">
+            <el-check-tag v-for="t in filteredTagCloud" :key="t.tag"
+                          :checked="selTags.includes(t.tag)"
+                          @change="toggleTag(t.tag)">
+              {{ t.tag }} <span class="tag-n">{{ t.count }}</span>
+            </el-check-tag>
+            <el-empty v-if="!filteredTagCloud.length" description="无匹配标签" :image-size="60" />
+          </div>
+          <template #footer>
+            <el-button @click="clearTags">清空</el-button>
+            <el-button @click="tagDialogVisible = false">取消</el-button>
+            <el-button type="primary" @click="applyTags">确定</el-button>
+          </template>
+        </el-dialog>
         <el-table :data="problems" size="small" v-loading="loading" class="fill-table">
           <el-table-column prop="display_id" label="#" width="70" />
           <el-table-column prop="title" label="标题" min-width="180" show-overflow-tooltip />
@@ -84,19 +112,24 @@
             清空
           </el-button>
         </div>
-        <el-table :data="picked" size="small">
+        <el-table :data="pagedPicked" size="small">
           <el-table-column label="题号" width="60">
-            <template #default="{ $index }">{{ String.fromCharCode(65 + $index) }}</template>
+            <template #default="{ $index }">{{ String.fromCharCode(65 + pickedOffset + $index) }}</template>
           </el-table-column>
           <el-table-column prop="title" label="标题" min-width="140" show-overflow-tooltip />
           <el-table-column label="操作" width="70">
             <template #default="{ $index }">
-              <el-button size="small" text type="danger" @click="picked.splice($index, 1)">
+              <el-button size="small" text type="danger" @click="picked.splice(pickedOffset + $index, 1)">
                 移除
               </el-button>
             </template>
           </el-table-column>
         </el-table>
+        <div v-if="pickedTotal > pickedPageSize" class="pager-row">
+          <el-pagination class="pager" layout="total, prev, pager, next"
+                         :total="pickedTotal" :page-size="pickedPageSize"
+                         v-model:current-page="pickedPage" />
+        </div>
         <div v-if="!picked.length" class="pick-hint">
           暂未添加题目；也可以直接创建比赛，之后在管理页配置
         </div>
@@ -115,8 +148,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
-import { Search } from '@element-plus/icons-vue'
+import { Filter, Search } from '@element-plus/icons-vue'
 import { api } from '../api/client'
+import { useClientPager } from '../composables/useClientPager'
 
 const router = useRouter()
 
@@ -137,6 +171,11 @@ const total = ref(0)
 
 // 已选题目（保持添加顺序 = 比赛 A/B/C 题号顺序；雪花 ID 用字符串）
 const picked = ref<any[]>([])
+
+// 已选题目可能很多：预留分页（题号字母按绝对序号推算）
+const { page: pickedPage, size: pickedPageSize, total: pickedTotal, paged: pagedPicked } =
+  useClientPager(computed<any[]>(() => picked.value), 20)
+const pickedOffset = computed(() => (pickedPage.value - 1) * pickedPageSize.value)
 const submitting = ref(false)
 
 const isPicked = (row: any) => picked.value.some((x) => x.id === row.id)
@@ -151,6 +190,32 @@ const diffTag = (d: number) => (['', 'info', 'success', 'warning', 'danger', 'da
 function doSearch() {
   page.value = 1
   loadProblems()
+}
+
+// 标签筛选弹窗（标签云可能很长，独立弹窗内多选）
+const tagDialogVisible = ref(false)
+const tagKeyword = ref('')
+const filteredTagCloud = computed(() => {
+  const k = tagKeyword.value.trim().toLowerCase()
+  if (!k) return tagCloud.value
+  return tagCloud.value.filter((t) => t.tag.toLowerCase().includes(k))
+})
+function toggleTag(tag: string) {
+  selTags.value = selTags.value.includes(tag)
+    ? selTags.value.filter((t) => t !== tag)
+    : [...selTags.value, tag]
+}
+function removeTag(tag: string) {
+  selTags.value = selTags.value.filter((t) => t !== tag)
+  doSearch()
+}
+function clearTags() {
+  selTags.value = []
+  doSearch()
+}
+function applyTags() {
+  tagDialogVisible.value = false
+  doSearch()
 }
 
 async function loadProblems() {
@@ -253,17 +318,17 @@ onMounted(() => {
 .cand-panel {
   flex: 1;
   min-width: 0;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 8px;
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
   padding: 6px 14px 14px;
-  background: #fff;
+  background: var(--oj-surface);
 }
 .picked-panel {
   flex: 0 0 320px;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 8px;
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
   padding: 0 14px 14px;
-  background: #fff;
+  background: var(--oj-surface);
   position: sticky;
   top: 16px;
 }
@@ -272,7 +337,7 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   padding: 10px 0;
-  border-bottom: 1px solid var(--el-border-color-lighter);
+  border-bottom: 1px solid var(--oj-line-soft);
 }
 .panel-title { font-weight: 700; font-size: 14px; }
 .filter-row {
@@ -284,13 +349,13 @@ onMounted(() => {
 .tag-sel { max-width: 280px; }
 .fill-table { width: 100%; }
 .row-tag { margin-right: 4px; }
-.no-tag { color: var(--el-text-color-placeholder); font-size: 13px; }
+.no-tag { color: var(--oj-ink-4); font-size: 13px; }
 .pager {
   margin-top: 10px;
   justify-content: flex-end;
 }
 .pick-hint {
-  color: var(--el-text-color-secondary);
+  color: var(--oj-ink-3);
   font-size: 13px;
   padding: 12px 0;
 }
@@ -300,4 +365,119 @@ onMounted(() => {
   gap: 8px;
   margin-top: 14px;
 }
+/* ===== 视觉刷新：统一页面骨架（追加层，保证同特异性下胜出） ===== */
+.page {
+  padding: var(--oj-s5) var(--oj-s6) var(--oj-s8);
+  box-sizing: border-box;
+}
+.page-head,
+.head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--oj-s3);
+  padding-bottom: var(--oj-s3);
+  border-bottom: 1px solid var(--oj-line);
+  margin-bottom: var(--oj-s5);
+}
+.page-head h2,
+.page-title {
+  margin: 0;
+  font-size: 24px;
+  letter-spacing: -0.02em;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--oj-s2);
+  padding-bottom: var(--oj-s3);
+  border-bottom: 1px solid var(--oj-line);
+  margin-bottom: var(--oj-s4);
+}
+.spacer { flex: 1; }
+.mono-id,
+.mono {
+  font-family: var(--oj-font-mono);
+  font-size: var(--oj-fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--oj-ink-3);
+}
+.muted,
+.tip,
+.pick-hint,
+.form-tip,
+.data-hint,
+.err-msg {
+  color: var(--oj-ink-3);
+  font-size: var(--oj-fs-sm);
+}
+.section { margin-top: var(--oj-s6); }
+.section h4 {
+  margin: 0 0 var(--oj-s3);
+  font-size: var(--oj-fs-lg);
+}
+.stat-card {
+  padding: var(--oj-s4) var(--oj-s5);
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
+  background: var(--oj-surface);
+  transition: border-color var(--oj-dur-2) var(--oj-ease),
+              box-shadow var(--oj-dur-2) var(--oj-ease),
+              transform var(--oj-dur-2) var(--oj-ease);
+}
+.stat-card:hover {
+  border-color: var(--oj-line-strong);
+  box-shadow: var(--oj-shadow-1);
+  transform: translateY(-1px);
+}
+.stat-value {
+  font-family: var(--oj-font-mono);
+  font-size: 26px;
+  letter-spacing: -0.02em;
+  color: var(--oj-ink);
+}
+.stat-label {
+  margin-top: 4px;
+  color: var(--oj-ink-3);
+  font-size: var(--oj-fs-sm);
+}
+.pager {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--oj-s3) 0;
+}
+.click-table,
+.fill-table,
+.cases-table,
+.verify-table,
+.log-list {
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
+  overflow: hidden;
+}
+
+/* ===== 逻辑复查：标签筛选弹窗 ===== */
+.head-titles { display: flex; flex-direction: column; gap: 2px; }
+.head-titles h2 { margin: 0; font-size: 24px; letter-spacing: -0.02em; }
+.tag-filter-btn { position: relative; }
+.tag-count {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--oj-accent);
+  color: #fff;
+  font-size: 12px;
+  line-height: 18px;
+}
+.picked-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.tag-search { margin-bottom: 10px; }
+.tag-cloud-box {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 2px;
+}
+.tag-n { color: var(--oj-ink-4); font-size: 12px; }
 </style>

@@ -6,16 +6,20 @@
 -->
 <template>
   <div class="page">
-    <div class="page-head">
-      <h2>我的提交记录</h2>
-      <el-select v-model="problemId" placeholder="搜索题名/题号筛选" clearable filterable
-                 style="width: 260px" @change="reload">
-        <el-option v-for="p in problems" :key="p.id"
-                   :label="`${p.display_id}. ${p.title}`" :value="p.id" />
-      </el-select>
-    </div>
+    <header class="page-head">
+      <div class="head-titles">
+        <span class="oj-kicker">Submissions</span>
+        <h2>提交记录</h2>
+      </div>
+      <div class="head-ops">
+        <el-button size="small" @click="showFilter = true">
+          筛选题目{{ problemId ? `：${problemTitle(problemId)}` : '' }}
+        </el-button>
+        <el-button v-if="problemId" size="small" text @click="clearFilter">清除</el-button>
+      </div>
+    </header>
 
-    <el-table :data="items" v-loading="loading" height="calc(100vh - 170px)"
+    <el-table :data="pagedItems" v-loading="loading" height="calc(100vh - 272px)"
               class="click-table" @row-click="(row: any) => $router.push(`/submissions/${row.id}`)">
       <el-table-column label="ID" width="130">
         <template #default="{ row }">
@@ -33,9 +37,9 @@
           <el-tag size="small" :type="statusTag(row.status)">{{ row.status_label }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="score" label="分数" width="80" />
-      <el-table-column prop="time_ms" label="耗时(ms)" width="100" />
-      <el-table-column label="内存" width="100">
+      <el-table-column prop="score" label="分数" width="80" align="right" />
+      <el-table-column prop="time_ms" label="耗时(ms)" width="100" align="right" />
+      <el-table-column label="内存" width="100" align="right">
         <template #default="{ row }">{{ (row.memory_kb / 1024).toFixed(1) }}MB</template>
       </el-table-column>
       <el-table-column label="提交时间" width="170">
@@ -43,11 +47,36 @@
       </el-table-column>
     </el-table>
     <el-empty v-if="!loading && items.length === 0" description="暂无提交记录" />
+
+    <div class="pager-row">
+      <el-pagination v-if="items.length > pageSize" class="pager"
+                     layout="total, prev, pager, next, jumper"
+                     :total="items.length" :page-size="pageSize"
+                     v-model:current-page="page" />
+    </div>
+
+    <!-- 题目筛选：候选 = 公开题 + 我管理的题（含草稿），数量多，下拉过长，拆成弹窗做搜索选择 -->
+    <el-dialog v-model="showFilter" title="筛选题目" width="520" append-to-body>
+      <el-input v-model="filterKw" placeholder="输入题名 / 题号搜索" clearable />
+      <div class="filter-list">
+        <div v-for="p in filteredProblems" :key="p.id" class="filter-item"
+             :class="{ 'is-active': String(p.id) === String(problemId) }"
+             @click="pickProblem(p)">
+          <span class="fi-id">{{ p.display_id }}</span>
+          <span class="fi-title">{{ p.title }}</span>
+        </div>
+        <el-empty v-if="filteredProblems.length === 0" description="无匹配题目" :image-size="60" />
+      </div>
+      <template #footer>
+        <el-button v-if="problemId" @click="clearFilter">清除筛选</el-button>
+        <el-button type="primary" @click="showFilter = false">完成</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '../api/client'
 import { shortId } from '../utils/format'
@@ -60,6 +89,36 @@ const problems = ref<any[]>([])
 // 雪花 ID 经 json-bigint 前端统一为 string，筛选值与选项 value 同型才能正确预选
 const problemId = ref<string | null>(null)
 const loading = ref(false)
+
+// 客户端分页：接口一次性返回该用户最近 50 条提交，页面内做分页展示
+const page = ref(1)
+const pageSize = 15
+const pagedItems = computed(() =>
+  items.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+watch(items, () => {
+  if ((page.value - 1) * pageSize >= items.value.length) page.value = 1
+})
+
+// 题目筛选弹窗
+const showFilter = ref(false)
+const filterKw = ref('')
+const filteredProblems = computed(() => {
+  const kw = filterKw.value.trim().toLowerCase()
+  const list = kw
+    ? problems.value.filter((p) => `${p.display_id}. ${p.title}`.toLowerCase().includes(kw))
+    : problems.value
+  return list.slice(0, 300)
+})
+function pickProblem(p: any) {
+  problemId.value = String(p.id)
+  showFilter.value = false
+  reload()
+}
+function clearFilter() {
+  problemId.value = null
+  showFilter.value = false
+  reload()
+}
 
 const statusTag = (s: string) =>
   ({ ac: 'success', wa: 'danger', tle: 'warning', mle: 'warning',
@@ -84,6 +143,7 @@ async function load() {
 }
 
 function reload() {
+  page.value = 1
   load()
 }
 
@@ -121,21 +181,70 @@ onUnmounted(() => clearInterval(timer))
 <style scoped>
 .page {
   height: 100%;
-  padding: 16px 20px;
+  padding: var(--oj-s5) var(--oj-s6) 0;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
 }
 .page-head {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
-  margin-bottom: 12px;
+  gap: var(--oj-s4);
+  padding-bottom: var(--oj-s3);
+  border-bottom: 1px solid var(--oj-line);
+  margin-bottom: var(--oj-s4);
+}
+.head-titles { display: flex; flex-direction: column; gap: 2px; }
+.head-titles h2 { font-size: 26px; letter-spacing: -0.02em; }
+
+.click-table {
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
+  overflow: hidden;
 }
 .click-table :deep(tbody tr) { cursor: pointer; }
 .mono-id {
-  font-family: 'JetBrains Mono', Consolas, Menlo, monospace;
-  font-size: 12px;
+  font-family: var(--oj-font-mono);
+  font-size: var(--oj-fs-xs);
+  color: var(--oj-ink-3);
   white-space: nowrap;
 }
+.head-ops { display: flex; align-items: center; gap: var(--oj-s2); }
+
+.pager-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--oj-s3) 0 var(--oj-s4);
+}
+
+/* 筛选弹窗内的题目列表：可滚动、悬停/选中态清晰 */
+.filter-list {
+  margin-top: var(--oj-s3);
+  max-height: 46vh;
+  overflow-y: auto;
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r2);
+}
+.filter-item {
+  display: flex;
+  align-items: center;
+  gap: var(--oj-s3);
+  padding: 8px var(--oj-s4);
+  cursor: pointer;
+  border-bottom: 1px solid var(--oj-line-soft);
+  transition: background var(--oj-dur-1) var(--oj-ease),
+              color var(--oj-dur-1) var(--oj-ease);
+}
+.filter-item:last-child { border-bottom: none; }
+.filter-item:hover { background: var(--oj-surface-2); }
+.filter-item.is-active { background: var(--oj-accent-soft); }
+.filter-item.is-active .fi-title { color: var(--oj-accent); }
+.fi-id {
+  min-width: 54px;
+  font-family: var(--oj-font-mono);
+  font-size: var(--oj-fs-sm);
+  color: var(--oj-ink-4);
+}
+.fi-title { font-size: var(--oj-fs-md); }
 </style>

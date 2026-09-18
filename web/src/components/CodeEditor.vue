@@ -83,8 +83,8 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   min-height: 120px;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 4px;
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r2);
   overflow: hidden;
 }
 </style>

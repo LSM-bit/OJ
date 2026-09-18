@@ -4,7 +4,7 @@
 */
 
 :root {
-  --oj-bg: #f5f7fa;
+  --oj-bg: var(--oj-paper);
   --oj-border: #e4e7ed;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -37,7 +37,7 @@ p { margin: 0; }
 .markdown pre {
   background: #f6f8fa;
   border: 1px solid var(--oj-border);
-  border-radius: 6px;
+  border-radius: var(--oj-r2);
   padding: 12px;
   overflow-x: auto;
   font-family: ui-monospace, Consolas, monospace;
@@ -48,7 +48,7 @@ p { margin: 0; }
   font-size: 13px;
   background: #f6f8fa;
   padding: 2px 5px;
-  border-radius: 4px;
+  border-radius: var(--oj-r2);
 }
 .markdown pre code { padding: 0; background: none; }
 
@@ -64,9 +64,9 @@ p { margin: 0; }
   font-size: 12px;
   line-height: 1.6;
   color: var(--el-text-color-secondary, #909399);
-  background: #fff;
+  background: var(--oj-surface);
   border: 1px solid var(--oj-border);
-  border-radius: 4px;
+  border-radius: var(--oj-r2);
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.2s;

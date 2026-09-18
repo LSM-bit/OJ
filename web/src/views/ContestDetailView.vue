@@ -51,7 +51,7 @@
       <!-- Tab 区 -->
       <el-tabs v-model="tab" class="contest-tabs">
         <el-tab-pane label="比赛题目" name="problems">
-          <el-table :data="problems" stripe>
+          <el-table :data="pagedProblems" stripe>
             <el-table-column prop="alias" label="#" width="60">
               <template #default="{ row }">
                 <span class="alias">{{ row.alias }}</span>
@@ -87,6 +87,11 @@
               </template>
             </el-table-column>
           </el-table>
+          <div v-if="problemsTotal > problemsPageSize" class="pager-row">
+            <el-pagination class="pager" layout="total, prev, pager, next"
+                           :total="problemsTotal" :page-size="problemsPageSize"
+                           v-model:current-page="problemsPage" />
+          </div>
 
           <!-- 行内提交面板 -->
           <div v-if="submitTarget" class="submit-panel">
@@ -117,7 +122,7 @@
           <div v-if="standings" class="standings-wrap">
             <el-alert v-if="standings.frozen" type="warning" :closable="false" show-icon
                       title="已封榜：封榜期间的提交结果将在比赛结束后揭晓" style="margin-bottom:12px" />
-            <el-table :data="standings.rows" stripe size="small">
+            <el-table :data="pagedStandings" stripe size="small">
               <el-table-column prop="rank" label="排名" width="64" align="center">
                 <template #default="{ row }">
                   <span :class="['rank', `rank-${row.rank <= 3 ? row.rank : 'n'}`]">{{ row.rank }}</span>
@@ -140,6 +145,11 @@
                 <template #default="{ row }">{{ row.penalty }}</template>
               </el-table-column>
             </el-table>
+            <div v-if="standingsTotal > standingsPageSize" class="pager-row">
+              <el-pagination class="pager" layout="total, prev, pager, next"
+                             :total="standingsTotal" :page-size="standingsPageSize"
+                             v-model:current-page="standingsPage" />
+            </div>
           </div>
         </el-tab-pane>
 
@@ -158,13 +168,18 @@
           </div>
           <el-empty v-if="announcements.length === 0" description="暂无公告" :image-size="60" />
           <div v-else class="ann-list">
-            <div v-for="a in announcements" :key="a.id" class="ann-item">
+            <div v-for="a in pagedAnnouncements" :key="a.id" class="ann-item">
               <div class="ann-head">
                 <span class="ann-title">{{ a.title }}</span>
                 <span class="ann-meta">{{ a.author_name }} · {{ fmtFull(a.created_at) }}</span>
               </div>
               <div class="ann-content">{{ a.content }}</div>
             </div>
+          </div>
+          <div v-if="annTotal > annPageSize" class="pager-row">
+            <el-pagination class="pager" layout="total, prev, pager, next"
+                           :total="annTotal" :page-size="annPageSize"
+                           v-model:current-page="annPage" />
           </div>
         </el-tab-pane>
 
@@ -234,12 +249,17 @@
               <h4>源码</h4>
               <pre class="code-block">{{ subDetail.code ?? '（旧提交未留存源码）' }}</pre>
               <h4>测试点</h4>
-              <el-table v-if="subDetail.detail?.length" :data="subDetail.detail" size="small" max-height="220">
+              <el-table v-if="subDetail.detail?.length" :data="pagedSubDetailCases" size="small" max-height="220">
                 <el-table-column prop="idx" label="#" width="60" />
                 <el-table-column prop="status" label="状态" />
                 <el-table-column prop="time_used_ms" label="耗时(ms)" />
                 <el-table-column prop="memory_used_kb" label="内存(KB)" />
               </el-table>
+              <div v-if="subDetailTotal > subDetailPageSize" class="pager-row">
+                <el-pagination class="pager" layout="total, prev, pager, next"
+                               :total="subDetailTotal" :page-size="subDetailPageSize"
+                               v-model:current-page="subDetailPage" />
+              </div>
               <p v-else class="form-tip">
                 {{ contest.phase === 'running' ? '比赛结束后可见测试点明细' : '暂无测试点数据' }}
               </p>
@@ -308,6 +328,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Edit } from '@element-plus/icons-vue'
 import { api } from '../api/client'
 import { shortId } from '../utils/format'
+import { useClientPager } from '../composables/useClientPager'
 import { useUserStore } from '../stores/user'
 
 const route = useRoute()
@@ -323,6 +344,11 @@ const registered = ref(false)
 
 // 公告
 const announcements = ref<any[]>([])
+// 排行榜 / 公告数量随参赛与运营增长：统一预留分页
+const { page: standingsPage, size: standingsPageSize, total: standingsTotal, paged: pagedStandings } =
+  useClientPager(computed<any[]>(() => standings.value?.rows ?? []), 50)
+const { page: annPage, size: annPageSize, total: annTotal, paged: pagedAnnouncements } =
+  useClientPager(computed<any[]>(() => announcements.value), 10)
 const annForm = reactive({ title: '', content: '' })
 const annPosting = ref(false)
 
@@ -370,6 +396,12 @@ async function reloadSubs() {
 // 提交详情弹窗（源码/测试点明细，由后端按权限与比赛阶段裁剪）
 const showSubDetail = ref(false)
 const subDetail = ref<any>(null)
+
+// 比赛题目 / 弹窗内测试点均可能变长：预留分页
+const { page: problemsPage, size: problemsPageSize, total: problemsTotal, paged: pagedProblems } =
+  useClientPager(computed<any[]>(() => problems.value), 20)
+const { page: subDetailPage, size: subDetailPageSize, total: subDetailTotal, paged: pagedSubDetailCases } =
+  useClientPager(computed<any[]>(() => subDetail.value?.detail ?? []), 20)
 
 async function openSubDetail(row: any) {
   subDetail.value = await api.get(
@@ -631,24 +663,24 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
 }
 .contest-header {
   padding: 20px;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 8px;
-  background: #fff;
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
+  background: var(--oj-surface);
   margin-bottom: 16px;
 }
 .ch-top { display: flex; align-items: center; gap: 12px; }
 .ch-title { margin: 0; font-size: 20px; flex: 1; }
-.ch-meta { margin-top: 10px; color: var(--el-text-color-secondary); font-size: 13px; }
+.ch-meta { margin-top: 10px; color: var(--oj-ink-3); font-size: 13px; }
 .divider { margin: 0 10px; }
 .countdown { color: var(--el-color-danger); font-weight: 600; }
 .alias { font-weight: 700; color: var(--el-color-primary); }
-.muted { color: var(--el-text-color-placeholder); }
+.muted { color: var(--oj-ink-4); }
 
 .submit-panel {
   margin-top: 16px;
   padding: 16px;
   border: 1px solid var(--el-color-primary-light-7);
-  border-radius: 8px;
+  border-radius: var(--oj-r3);
   background: var(--el-color-primary-light-9);
 }
 .submit-panel h4 { margin: 0 0 10px; }
@@ -665,28 +697,28 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
   padding: 12px 16px;
   margin-bottom: 16px;
   border: 1px solid var(--el-color-primary-light-7);
-  border-radius: 8px;
+  border-radius: var(--oj-r3);
   background: var(--el-color-primary-light-9);
 }
 .ann-editor h4 { margin: 0 0 8px; }
 .ann-list { display: flex; flex-direction: column; gap: 12px; }
 .ann-item {
   padding: 12px 16px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  background: #fff;
+  border: 1px solid var(--oj-line-soft);
+  border-radius: var(--oj-r3);
+  background: var(--oj-surface);
 }
 .ann-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .ann-title { font-weight: 600; }
-.ann-meta { color: var(--el-text-color-secondary); font-size: 12px; white-space: nowrap; }
+.ann-meta { color: var(--oj-ink-3); font-size: 12px; white-space: nowrap; }
 .ann-content {
   margin-top: 6px;
   font-size: 13px;
   white-space: pre-wrap;
   word-break: break-word;
-  color: var(--el-text-color-regular);
+  color: var(--oj-ink-2);
 }
-.form-tip { color: var(--el-text-color-placeholder); font-size: 12px; }
+.form-tip { color: var(--oj-ink-4); font-size: 12px; }
 
 /* 提交记录 */
 .subs-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
@@ -697,9 +729,9 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
 }
 .err-msg { color: var(--el-color-danger); font-size: 13px; }
 .code-block {
-  background: #f5f7fa;
+  background: var(--oj-paper);
   padding: 10px;
-  border-radius: 6px;
+  border-radius: var(--oj-r2);
   font-size: 12px;
   max-height: 260px;
   overflow: auto;
@@ -711,7 +743,7 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
 .rank-2 { color: #909399; }
 .rank-3 { color: #b8860b; }
 .cell-bubble {
-  border-radius: 4px;
+  border-radius: var(--oj-r2);
   padding: 4px 6px;
   font-size: 12px;
   font-weight: 600;
@@ -722,6 +754,96 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
 .cell-solved { background: #f0f9eb; color: var(--el-color-success); border: 1px solid #e1f3d8; }
 .cell-frozen { background: #fdf6ec; color: var(--el-color-warning); border: 1px solid #faecd8; }
 .cell-attempts { background: #fef0f0; color: var(--el-color-danger); border: 1px solid #fde2e2; }
-.cell-pending { background: #f4f4f5; color: var(--el-text-color-secondary); border: 1px solid #e9e9eb; }
-.cell-none { color: var(--el-text-color-placeholder); }
+.cell-pending { background: #f4f4f5; color: var(--oj-ink-3); border: 1px solid #e9e9eb; }
+.cell-none { color: var(--oj-ink-4); }
+/* ===== 视觉刷新：统一页面骨架（追加层，保证同特异性下胜出） ===== */
+.page {
+  padding: var(--oj-s5) var(--oj-s6) var(--oj-s8);
+  box-sizing: border-box;
+}
+.page-head,
+.head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--oj-s3);
+  padding-bottom: var(--oj-s3);
+  border-bottom: 1px solid var(--oj-line);
+  margin-bottom: var(--oj-s5);
+}
+.page-head h2,
+.page-title {
+  margin: 0;
+  font-size: 24px;
+  letter-spacing: -0.02em;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--oj-s2);
+  padding-bottom: var(--oj-s3);
+  border-bottom: 1px solid var(--oj-line);
+  margin-bottom: var(--oj-s4);
+}
+.spacer { flex: 1; }
+.mono-id,
+.mono {
+  font-family: var(--oj-font-mono);
+  font-size: var(--oj-fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--oj-ink-3);
+}
+.muted,
+.tip,
+.pick-hint,
+.form-tip,
+.data-hint,
+.err-msg {
+  color: var(--oj-ink-3);
+  font-size: var(--oj-fs-sm);
+}
+.section { margin-top: var(--oj-s6); }
+.section h4 {
+  margin: 0 0 var(--oj-s3);
+  font-size: var(--oj-fs-lg);
+}
+.stat-card {
+  padding: var(--oj-s4) var(--oj-s5);
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
+  background: var(--oj-surface);
+  transition: border-color var(--oj-dur-2) var(--oj-ease),
+              box-shadow var(--oj-dur-2) var(--oj-ease),
+              transform var(--oj-dur-2) var(--oj-ease);
+}
+.stat-card:hover {
+  border-color: var(--oj-line-strong);
+  box-shadow: var(--oj-shadow-1);
+  transform: translateY(-1px);
+}
+.stat-value {
+  font-family: var(--oj-font-mono);
+  font-size: 26px;
+  letter-spacing: -0.02em;
+  color: var(--oj-ink);
+}
+.stat-label {
+  margin-top: 4px;
+  color: var(--oj-ink-3);
+  font-size: var(--oj-fs-sm);
+}
+.pager {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--oj-s3) 0;
+}
+.click-table,
+.fill-table,
+.cases-table,
+.verify-table,
+.log-list {
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
+  overflow: hidden;
+}
 </style>

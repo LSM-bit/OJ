@@ -6,9 +6,9 @@ import { useUserStore } from '../stores/user'
 const router = createRouter({
   history: createWebHistory(),
   routes: [
-    // 主页 = 题目页（无独立首页）
-    { path: '/', redirect: '/problems' },
-    { path: '/home', redirect: '/problems' },
+    // 主页（独立首页：概览 + 每日打卡 + 快捷入口 + 最新题目）
+    { path: '/', name: 'home', component: () => import('../views/HomeView.vue') },
+    { path: '/home', redirect: '/' },
     // 刷题（公开题目）
     { path: '/problems', name: 'problems', component: () => import('../views/ProblemsView.vue') },
     { path: '/problems/:id', name: 'problem-detail', component: () => import('../views/ProblemDetailView.vue') },

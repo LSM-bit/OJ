@@ -9,6 +9,7 @@
       <div class="page-head">
         <div>
           <el-button size="small" text @click="$router.back()">← 返回</el-button>
+          <span class="oj-kicker">Submission</span>
           <span class="s-title">提交 <span class="mono-id" :title="sub.id">#{{ shortId(sub.id) }}</span></span>
           <el-tag :type="statusTag(sub.status)" style="margin-left: 10px">{{ sub.status_label }}</el-tag>
         </div>
@@ -46,7 +47,7 @@
       </div>
 
       <h4 class="sec-title">测试点明细</h4>
-      <el-table :data="sub.detail ?? []" size="small" border>
+      <el-table :data="pagedCases" size="small" border>
         <el-table-column prop="idx" label="#" width="70" />
         <el-table-column label="状态" width="180">
           <template #default="{ row }">
@@ -58,6 +59,11 @@
           <template #default="{ row }">{{ (row.memory_used_kb / 1024).toFixed(1) }} MB</template>
         </el-table-column>
       </el-table>
+      <div v-if="caseTotal > casePageSize" class="pager-row">
+        <el-pagination class="pager" layout="total, prev, pager, next"
+                       :total="caseTotal" :page-size="casePageSize"
+                       v-model:current-page="casePage" />
+      </div>
     </template>
   </div>
 </template>
@@ -69,6 +75,7 @@ import { ElMessage } from 'element-plus'
 import { MagicStick } from '@element-plus/icons-vue'
 import { api } from '../api/client'
 import { shortId } from '../utils/format'
+import { useClientPager } from '../composables/useClientPager'
 import { useUserStore } from '../stores/user'
 import { useAssistantStore } from '../stores/assistant'
 import CodeEditor from '../components/CodeEditor.vue'
@@ -79,6 +86,11 @@ const assistant = useAssistantStore()
 const sub = ref<any>(null)
 const problems = ref<any[]>([])
 const loading = ref(true)
+
+// 测试点数量可能很多：前端预留分页
+const caseRows = computed<any[]>(() => sub.value?.detail ?? [])
+const { page: casePage, size: casePageSize, total: caseTotal, paged: pagedCases } =
+  useClientPager(caseRows, 20)
 
 // 「诊断这次错误」：以本次提交为上下文打开助教抽屉（后端 _resolve_context 自动带 problem_id）
 function askAi() {
@@ -173,8 +185,8 @@ onUnmounted(() => {
 .sec-title { margin: 0 0 10px; }
 .code-box {
   height: 380px;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 8px;
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
   overflow: hidden;
   margin-bottom: 16px;
 }
@@ -187,7 +199,114 @@ onUnmounted(() => {
 .code-fallback {
   margin: 0;
   padding: 12px 14px;
-  color: var(--el-text-color-placeholder);
+  color: var(--oj-ink-4);
   font-size: 13px;
 }
+/* ===== 视觉刷新：统一页面骨架（追加层，保证同特异性下胜出） ===== */
+.page {
+  padding: var(--oj-s5) var(--oj-s6) var(--oj-s8);
+  box-sizing: border-box;
+}
+.page-head,
+.head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--oj-s3);
+  padding-bottom: var(--oj-s3);
+  border-bottom: 1px solid var(--oj-line);
+  margin-bottom: var(--oj-s5);
+}
+.page-head h2,
+.page-title {
+  margin: 0;
+  font-size: 24px;
+  letter-spacing: -0.02em;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--oj-s2);
+  padding-bottom: var(--oj-s3);
+  border-bottom: 1px solid var(--oj-line);
+  margin-bottom: var(--oj-s4);
+}
+.spacer { flex: 1; }
+.mono-id,
+.mono {
+  font-family: var(--oj-font-mono);
+  font-size: var(--oj-fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--oj-ink-3);
+}
+.muted,
+.tip,
+.pick-hint,
+.form-tip,
+.data-hint,
+.err-msg {
+  color: var(--oj-ink-3);
+  font-size: var(--oj-fs-sm);
+}
+.section { margin-top: var(--oj-s6); }
+.section h4 {
+  margin: 0 0 var(--oj-s3);
+  font-size: var(--oj-fs-lg);
+}
+.stat-card {
+  padding: var(--oj-s4) var(--oj-s5);
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
+  background: var(--oj-surface);
+  transition: border-color var(--oj-dur-2) var(--oj-ease),
+              box-shadow var(--oj-dur-2) var(--oj-ease),
+              transform var(--oj-dur-2) var(--oj-ease);
+}
+.stat-card:hover {
+  border-color: var(--oj-line-strong);
+  box-shadow: var(--oj-shadow-1);
+  transform: translateY(-1px);
+}
+.stat-value {
+  font-family: var(--oj-font-mono);
+  font-size: 26px;
+  letter-spacing: -0.02em;
+  color: var(--oj-ink);
+}
+.stat-label {
+  margin-top: 4px;
+  color: var(--oj-ink-3);
+  font-size: var(--oj-fs-sm);
+}
+.pager {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--oj-s3) 0;
+}
+.click-table,
+.fill-table,
+.cases-table,
+.verify-table,
+.log-list {
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
+  overflow: hidden;
+}
+
+/* 提交详情 */
+.s-title { letter-spacing: -0.02em; }
+.meta { color: var(--oj-ink-3); font-size: var(--oj-fs-sm); }
+.sec-title {
+  font-size: var(--oj-fs-xs);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--oj-ink-4);
+}
+.ce-box,
+.code-box {
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
+  overflow: hidden;
+}
+.err-pre { font-family: var(--oj-font-mono); }
 </style>

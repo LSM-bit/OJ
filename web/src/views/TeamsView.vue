@@ -4,8 +4,11 @@
 -->
 <template>
   <div class="page">
-    <div class="page-head">
-      <h2>我的团队</h2>
+    <header class="page-head">
+      <div class="head-titles">
+        <span class="oj-kicker">Teams</span>
+        <h2>我的团队</h2>
+      </div>
       <div class="head-ops">
         <el-radio-group v-model="archived" size="small" @change="load">
           <el-radio-button :value="false">进行中</el-radio-button>
@@ -14,22 +17,32 @@
         <el-button size="small" @click="showJoin = true">凭邀请码加入</el-button>
         <el-button type="primary" size="small" @click="showCreate = true">创建团队</el-button>
       </div>
-    </div>
+    </header>
 
     <el-empty v-if="!loading && teams.length === 0"
               :description="archived ? '没有已归档的团队' : '还没有加入任何团队'" />
 
     <div class="team-list">
-      <div v-for="t in teams" :key="t.id" class="team-card">
-        <div class="team-main" @click="openTeam(t)">
-          <span class="team-name">{{ t.name }}</span>
-          <el-tag size="small" :type="t.my_role === 'owner' ? 'warning' : t.my_role === 'admin' ? 'success' : 'info'">
-            {{ roleLabel(t.my_role) }}
-          </el-tag>
-          <el-tag v-if="t.archived" size="small" type="info" effect="plain">已归档</el-tag>
+      <div v-for="t in pagedTeams" :key="t.id" class="team-card" @click="openTeam(t)">
+        <div class="team-main">
+          <div class="team-title-row">
+            <span class="team-name">{{ t.name }}</span>
+            <el-tag size="small" effect="plain"
+                    :type="t.my_role === 'owner' ? 'warning' : t.my_role === 'admin' ? 'success' : 'info'">
+              {{ roleLabel(t.my_role) }}
+            </el-tag>
+            <el-tag v-if="t.archived" size="small" type="info" effect="plain">已归档</el-tag>
+          </div>
           <p class="team-desc">{{ t.description || '暂无简介' }}</p>
         </div>
+        <span class="team-go">→</span>
       </div>
+    </div>
+
+    <div class="pager-row">
+      <el-pagination v-if="teams.length > pageSize" class="pager"
+                     layout="total, prev, pager, next" :total="teams.length"
+                     :page-size="pageSize" v-model:current-page="page" />
     </div>
 
     <!-- 凭邀请码加入 -->
@@ -78,7 +91,7 @@
         </div>
 
         <h4>成员（{{ detail.members?.length ?? detail.member_count ?? 0 }}）</h4>
-        <div v-for="m in detail.members ?? []" :key="m.user_id" class="member-row">
+        <div v-for="m in pagedMembers" :key="m.user_id" class="member-row">
           <span class="m-name">{{ m.username }}</span>
           <el-tag size="small" :type="roleTag(m.role)">{{ roleLabel(m.role) }}</el-tag>
           <div class="m-ops" v-if="canManage && m.role !== 'owner'">
@@ -94,20 +107,34 @@
             <el-button size="small" text type="danger" @click="leave()">退出团队</el-button>
           </div>
         </div>
+        <div v-if="membersTotal > membersPageSize" class="pager-row">
+          <el-pagination class="pager" layout="total, prev, pager, next"
+                         :total="membersTotal" :page-size="membersPageSize"
+                         v-model:current-page="membersPage" />
+        </div>
       </template>
     </el-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api/client'
 import { useUserStore } from '../stores/user'
+import { useClientPager } from '../composables/useClientPager'
 
 const userStore = useUserStore()
 const teams = ref<any[]>([])
 const loading = ref(false)
+// 客户端分页：接口返回我加入的全部团队，页面内分页展示
+const page = ref(1)
+const pageSize = 8
+const pagedTeams = computed(() =>
+  teams.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+watch(teams, () => {
+  if ((page.value - 1) * pageSize >= teams.value.length) page.value = 1
+})
 const archived = ref(false) // 列表视角：false=进行中，true=已归档
 const showCreate = ref(false)
 const creating = ref(false)
@@ -120,6 +147,10 @@ const joining = ref(false)
 
 const showDetail = ref(false)
 const detail = ref<any>(null)
+
+// 团队成员可能很多：前端预留分页
+const { page: membersPage, size: membersPageSize, total: membersTotal, paged: pagedMembers } =
+  useClientPager(computed<any[]>(() => detail.value?.members ?? []), 20)
 const inviteCode = ref('')
 
 const me = computed(() => userStore.user)
@@ -133,10 +164,17 @@ const roleTag = (r: string) =>
 
 async function load() {
   loading.value = true
+  page.value = 1
   try {
     teams.value = await api.get('/teams', {
       params: { archived: archived.value ? 1 : 0 },
     }) as any
+  } catch (e: any) {
+    // 未登录 / 无权限：退化为空列表，不把异常抛给 mounted
+    teams.value = []
+    if (userStore.isLoggedIn) {
+      ElMessage.error(e.response?.data?.detail ?? '团队列表加载失败')
+    }
   } finally {
     loading.value = false
   }
@@ -273,38 +311,94 @@ onMounted(load)
 <style scoped>
 .page {
   height: 100%;
-  padding: 16px 20px;
+  padding: var(--oj-s5) var(--oj-s6) var(--oj-s8);
   box-sizing: border-box;
   overflow-y: auto;
 }
 .page-head {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
-  margin-bottom: 16px;
+  gap: var(--oj-s4);
+  padding-bottom: var(--oj-s3);
+  border-bottom: 1px solid var(--oj-line);
+  margin-bottom: var(--oj-s5);
 }
-.head-ops { display: flex; gap: 8px; }
-.team-list { display: flex; flex-direction: column; gap: 10px; }
+.head-titles { display: flex; flex-direction: column; gap: 2px; }
+.head-titles h2 { font-size: 26px; letter-spacing: -0.02em; }
+.head-ops { display: flex; align-items: center; gap: var(--oj-s2); }
+
+.team-list { display: flex; flex-direction: column; gap: var(--oj-s3); }
 .team-card {
-  padding: 14px 18px;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 8px;
-  background: #fff;
+  display: flex;
+  align-items: center;
+  gap: var(--oj-s4);
+  padding: var(--oj-s4) var(--oj-s5);
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r3);
+  background: var(--oj-surface);
   cursor: pointer;
+  transition: border-color var(--oj-dur-2) var(--oj-ease),
+              box-shadow var(--oj-dur-2) var(--oj-ease),
+              transform var(--oj-dur-2) var(--oj-ease);
 }
-.team-card:hover { box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06); }
-.team-name { font-weight: 600; margin-right: 10px; }
-.team-desc { color: var(--el-text-color-secondary); font-size: 13px; margin-top: 6px; }
-.d-desc { color: var(--el-text-color-secondary); font-size: 13px; }
-.d-actions { margin: 10px 0 16px; display: flex; align-items: center; gap: 10px; }
-.invite-code { font-size: 13px; color: var(--el-color-primary); }
+.team-card:hover {
+  border-color: var(--oj-line-strong);
+  box-shadow: var(--oj-shadow-1);
+  transform: translateX(2px);
+}
+.team-main { flex: 1; min-width: 0; }
+.team-title-row { display: flex; align-items: center; gap: var(--oj-s2); }
+.team-name {
+  font-family: var(--oj-font-display);
+  font-size: var(--oj-fs-lg);
+  font-weight: 600;
+  color: var(--oj-ink);
+}
+.team-desc {
+  margin-top: 6px;
+  color: var(--oj-ink-3);
+  font-size: var(--oj-fs-md);
+}
+.team-go {
+  flex-shrink: 0;
+  color: var(--oj-ink-4);
+  transition: color var(--oj-dur-2) var(--oj-ease),
+              transform var(--oj-dur-2) var(--oj-ease);
+}
+.team-card:hover .team-go { color: var(--oj-accent); transform: translateX(3px); }
+
+/* 团队详情抽屉 */
+.d-desc { color: var(--oj-ink-3); font-size: var(--oj-fs-md); }
+.d-actions {
+  margin: var(--oj-s3) 0 var(--oj-s4);
+  display: flex;
+  align-items: center;
+  gap: var(--oj-s3);
+}
+.invite-code {
+  font-size: var(--oj-fs-sm);
+  color: var(--oj-ink-3);
+}
+.invite-code b {
+  font-family: var(--oj-font-mono);
+  color: var(--oj-accent);
+  letter-spacing: 0.04em;
+}
 .member-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--el-border-color-lighter);
+  gap: var(--oj-s2);
+  padding: var(--oj-s2) 0;
+  border-bottom: 1px solid var(--oj-line-soft);
 }
-.m-name { flex: 1; }
+.member-row:last-child { border-bottom: none; }
+.m-name { flex: 1; font-size: var(--oj-fs-md); }
 .m-ops { display: flex; gap: 2px; }
+
+.pager-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--oj-s4) 0;
+}
 </style>
