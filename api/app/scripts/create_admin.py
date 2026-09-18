@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.database import AsyncSessionLocal
 from app.models import User, UserRole
@@ -24,20 +24,29 @@ DEFAULT_ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Admin0")
 
 async def create_admin(username: str = DEFAULT_ADMIN_USERNAME,
                        password: str = DEFAULT_ADMIN_PASSWORD) -> None:
+    email = f"{username.lower()}@oj.local"
     async with AsyncSessionLocal() as db:
-        exists = await db.scalar(select(User).where(User.username == username))
+        # 幂等判定必须同时按用户名和邮箱查：
+        # 用户可能在后台改过用户名而邮箱保持不变，此时只按用户名查会漏判，
+        # 进而重复 INSERT 撞上 email 唯一约束，导致容器启动即崩溃。
+        exists = await db.scalar(
+            select(User).where(or_(User.username == username, User.email == email))
+        )
         if exists:
             # 已存在则确保是管理员（幂等）
             if exists.role != UserRole.ADMIN:
                 exists.role = UserRole.ADMIN
                 await db.commit()
-                print(f"用户 {username} 已存在，已提升为 ADMIN")
+                print(f"用户 {exists.username} 已存在，已提升为 ADMIN")
+            elif exists.username != username:
+                print(f"管理员 {exists.username} 已存在（邮箱 {email}），"
+                      f"与配置的 ADMIN_USERNAME={username} 不一致，跳过")
             else:
                 print(f"管理员 {username} 已存在，跳过")
             return
         admin = User(
             username=username,
-            email=f"{username.lower()}@oj.local",
+            email=email,
             password_hash=hash_password(password),
             role=UserRole.ADMIN,
             rating=1500,
