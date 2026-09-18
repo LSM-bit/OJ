@@ -36,6 +36,11 @@ api.log
 # LOJ 爬题工具与爬取数据（本地工具，不入库）
 loj_import/
 api/data/
+loj_import.tar.gz
+
+# Claude Code 本地配置（含本机绝对路径与测试口令，禁止入库）
+.claude/settings.json
+.claude/settings.local.json
 
 # deploy 下的本地调试脚本与日志（含服务器 SSH 凭据明文，禁止入库）
 deploy/check_*.py
