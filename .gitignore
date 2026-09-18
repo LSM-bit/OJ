@@ -36,3 +36,19 @@ api.log
 # LOJ 爬题工具与爬取数据（本地工具，不入库）
 loj_import/
 api/data/
+
+# deploy 下的本地调试脚本与日志（含服务器 SSH 凭据明文，禁止入库）
+deploy/check_*.py
+deploy/tmp_*.py
+deploy/remote_*.py
+deploy/e2e_*.py
+deploy/import_*.py
+deploy/poll_build.py
+deploy/quick*.py
+deploy/restart_build.py
+deploy/smoke_test.py
+deploy/ssh_debug.py
+deploy/final_check.py
+deploy/*-log.txt
+deploy/import_err.txt
+deploy/import_log.txt

@@ -26,6 +26,18 @@ if defined MISSING_ENV (
     exit /b 1
 )
 
+rem 判题基础镜像检查: judge-node 的 FROM（缺失时先构建，避免 compose build 失败）
+docker image inspect oj-judge-base:24.04 >nul 2>&1
+if errorlevel 1 (
+    echo [0/3] 首次构建判题基础镜像 oj-judge-base:24.04（工具链/JDK/nsjail，约 5~15 分钟）...
+    docker build -f "%~dp0deploy\judge-base.Dockerfile" -t oj-judge-base:24.04 "%~dp0."
+    if errorlevel 1 (
+        echo [错误] 判题基础镜像构建失败
+        pause
+        exit /b 1
+    )
+)
+
 echo [1/3] 启动基础设施容器 (postgres / redis / judge-node)...
 docker compose -f "%~dp0deploy\docker-compose.yml" up -d
 if errorlevel 1 (

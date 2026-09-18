@@ -82,7 +82,15 @@ API/前端/基础设施全部容器化 + nginx 同源反代（`/api/` 前缀）�
 cd deploy
 cp api.env.example api.env   # 填真实密钥（openssl rand -hex 生成，三处一致性见手册）
 # judge-node.env / .env 按模板填好
-docker compose -f docker-compose.yml -f compose.prod.yml up -d --build
+cd .. && docker build -f deploy/judge-base.Dockerfile -t oj-judge-base:24.04 .   # 判题基础镜像，只需一次
+cd deploy && docker compose -f docker-compose.yml -f compose.prod.yml up -d --build
+```
+
+判题节点拆成两层镜像：`oj-judge-base:24.04`（工具链 / JDK21 / nsjail / gRPC，构建一次约 5~15 分钟），上层 `judge-node` 只 COPY 代码配置，重建几秒。基础镜像变了才需要 `--base` 重建：
+
+```bash
+bash deploy/update.sh          # 日常更新：拉代码 + 重建启动（基础镜像缺失时自动构建）
+bash deploy/update.sh --base   # 改了 judge-base.Dockerfile 或升级依赖后强制重建基础镜像
 ```
 
 要点：对外只暴露 web 容器 80（infra 端口仅 127.0.0.1 绑定）；api 容器 CMD 自带
