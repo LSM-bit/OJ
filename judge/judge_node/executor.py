@@ -68,7 +68,7 @@ class JudgeWorker:
     ) -> list[ExecutionResult]:
         """编译一次后逐测试点运行。stop_on_failure：ACM 赛制短路。"""
         compile_limits = compile_limits or ResourceLimits(
-            time_limit_ms=max(10_000, cases[0].limits.time_limit_ms * 10),
+            time_limit_ms=max(COMPILE_TIME_LIMIT_MS, cases[0].limits.time_limit_ms * 10),
             # 编译器（尤其 javac/JVM）需要预留大块虚拟地址空间，放宽到 4GB
             memory_limit_mb=max(4096, cases[0].limits.memory_limit_mb),
             output_limit_kb=cases[0].limits.output_limit_kb,
@@ -144,7 +144,7 @@ class JudgeWorker:
             if compile_cmd:
                 # 与 execute_cases 一致：编译阶段放宽限制（javac/JVM 需要大地址空间与进程配额）
                 compile_limits = ResourceLimits(
-                    time_limit_ms=max(10_000, limits.time_limit_ms * 10),
+                    time_limit_ms=max(COMPILE_TIME_LIMIT_MS, limits.time_limit_ms * 10),
                     memory_limit_mb=max(4096, limits.memory_limit_mb),
                     output_limit_kb=limits.output_limit_kb,
                     process_limit=max(512, limits.process_limit),
@@ -367,6 +367,14 @@ def _tree_peak_rss(root_pid: int) -> int:
             continue
     return peak
 
+
+# 编译阶段时限下限（毫秒）：与题目运行时限解耦。
+# 依据：实测 2 核 VPS 上 g++ -std=c++17 -O2 编译一个 #include <bits/stdc++.h> 的程序
+# 需 20~25s；而原下限 max(10s, 题目时限x10) 对 2000ms 题只给 20s，
+# 编译进程被 nsjail 按 --time_limit SIGKILL，g++ 来不及输出任何 stderr，
+# 最终只落得一条 COMPILE_ERROR + 空错误信息（用户完全看不到原因）。
+# 编译属"定长一次性开销"，不应随题目时限缩放，故设固定下限。
+COMPILE_TIME_LIMIT_MS = 60_000
 
 # 语言级时限系数：解释型 / 托管运行时（JVM 冷启动、JIT 预热、CPython 解释开销）
 # 的常数开销远大于原生程序，按业界惯例对墙钟时限整体放宽，避免误判 TLE。

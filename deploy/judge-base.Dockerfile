@@ -53,3 +53,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN python3 -m pip install --break-system-packages --no-cache-dir \
     -i https://pypi.tuna.tsinghua.edu.cn/simple \
     grpcio==1.83.0 protobuf==7.36.0 'redis>=5.2'
+
+# 预编译头（PCH）：把 -std=c++17 -O2 下 bits/stdc++.h 的预处理/语法分析结果固化为
+# stdc++.h.gch，使每次提交的编译开销从 ~21s 降到数秒。
+# 编译选项必须与判题命令一致（-std=c++17 -O2），否则 GCC 会忽略该 PCH 并回退整头解析；
+# 不一致时仅忽略+告警，不会导致编译失败，因此不引入正确性风险。
+RUN BITS="$(find /usr/include -path '*bits/stdc++.h' | head -1)" \
+    && test -n "$BITS" \
+    && printf '#include <bits/stdc++.h>\n' > /tmp/pch.cpp \
+    && g++ -std=c++17 -O2 -x c++-header /tmp/pch.cpp -o "$BITS.gch" \
+    && rm -f /tmp/pch.cpp \
+    && ls -l "$BITS.gch" \
+    && echo "OK: bits/stdc++.h PCH built"
