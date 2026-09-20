@@ -7,6 +7,10 @@
  * 用法：
  *   const { page, size, total, paged } = useClientPager(computed(() => list.value), 20)
  *   模板里 v-for="item in paged"，底部放 <div class="pager-row"><el-pagination ... /></div>
+ *
+ * ⚠️ 硬性顺序约束：传进来的 source 依赖的变量（ref / computed）必须在**调用本函数之前**
+ *    就已声明。内部 watch(total) 建订阅时会立刻读取一次 source，若源声明在调用之后，
+ *    会抛 "Cannot access 'xxx' before initialization"（TDZ），setup 直接失败、整页空白。
  */
 import { computed, ref, watch, type ComputedRef, type Ref } from 'vue'
 

@@ -289,10 +289,8 @@ const chooseKw = ref('')
 const { page: editProblemsPage, size: editProblemsPageSize, total: editProblemsTotal, paged: pagedEditProblems } =
   useClientPager(computed<any[]>(() => editForm.value.problem_ids), 10)
 const editProblemOffset = computed(() => (editProblemsPage.value - 1) * editProblemsPageSize.value)
-const { page: choosePage, size: choosePageSize, total: chooseTotal, paged: pagedChooseList } =
-  useClientPager(computed<any[]>(() => chooseList.value), 20)
-// 搜索词变化时回到第一页
-watch(chooseKw, () => { choosePage.value = 1 })
+// 注意：source 必须在使用 useClientPager 之前就已定义——useClientPager 内部 watch
+// 建订阅时会立即读取一次 computed 源，源若定义在后会触发 TDZ（整页 setup 抛错变空白）
 const chooseList = computed(() => {
   const kw = chooseKw.value.trim().toLowerCase()
   const list = kw
@@ -300,6 +298,10 @@ const chooseList = computed(() => {
     : allProblems.value
   return list.slice(0, 300)
 })
+const { page: choosePage, size: choosePageSize, total: chooseTotal, paged: pagedChooseList } =
+  useClientPager(computed<any[]>(() => chooseList.value), 20)
+// 搜索词变化时回到第一页
+watch(chooseKw, () => { choosePage.value = 1 })
 
 function openChoose() {
   chooseKw.value = ''
@@ -361,11 +363,15 @@ async function load() {
   page.value = 1
   try {
     playlists.value = await api.get('/playlists') as any
-    try {
-      myTeams.value = await api.get('/teams') as any
-      // 出题视角选题：拉自己管理的题目（含私有草稿题，可加进题单）
-      allProblems.value = await api.get('/problems?mine=1') as any
-    } catch { /* 未登录忽略 */ }
+    // 仅登录用户才拉登录态接口：匿名浏览公开题单时 /teams 的 401 会被响应拦截器
+    // 误判为"会话过期"而把访客踢到 /login（表现为题单页打不开）
+    if (userStore.token) {
+      try {
+        myTeams.value = await api.get('/teams') as any
+        // 出题视角选题：拉自己管理的题目（含私有草稿题，可加进题单）
+        allProblems.value = await api.get('/problems?mine=1') as any
+      } catch { /* 未登录忽略 */ }
+    }
   } finally {
     loading.value = false
   }
