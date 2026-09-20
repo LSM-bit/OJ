@@ -55,9 +55,18 @@ const router = createRouter({
 })
 
 // 守卫：非 ADMIN 访问 /admin/* 跳首页（体验层，后端仍强校验）
-router.beforeEach((to) => {
+// 注意：刷新页面时 Pinia 里只有 token、还没有用户信息，必须先 await fetchMe 再判定，
+// 否则 admin 刷新后台页会被误判为未登录而弹回首页（要求：刷新停留在当前页面）
+router.beforeEach(async (to) => {
   if (to.meta.requiresAdmin) {
     const userStore = useUserStore()
+    if (userStore.token && !userStore.user) {
+      try {
+        await userStore.fetchMe()
+      } catch {
+        // 令牌失效或网络异常：按未登录处理，交给下面的判定
+      }
+    }
     if (userStore.user?.role !== 'admin') return '/'
   }
 })
