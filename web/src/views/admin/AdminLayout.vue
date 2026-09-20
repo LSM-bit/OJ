@@ -5,50 +5,41 @@
 -->
 <template>
   <div class="admin-layout">
+    <!-- 窄屏（≤768px）工具条：接管侧栏入口，桌面端不显示 -->
+    <div class="admin-mobile-bar">
+      <button type="button" class="admin-toggle" aria-label="打开管理菜单" @click="mobileOpen = true">
+        <el-icon :size="18"><Menu /></el-icon>
+      </button>
+      <span class="admin-mobile-title">OJ 后台</span>
+      <span class="admin-mobile-spacer" />
+      <el-button text size="small" @click="$router.push('/')">返回前台</el-button>
+    </div>
+
     <el-aside class="admin-aside" width="200px">
       <div class="admin-logo" @click="$router.push('/')">OJ 后台</div>
       <el-menu router :default-active="route.path" class="admin-menu">
-        <el-menu-item index="/admin">
-          <span>站点概况</span>
-        </el-menu-item>
-        <el-menu-item index="/admin/users">
-          <span>用户管理</span>
-        </el-menu-item>
-        <el-menu-item index="/admin/problems">
-          <span>题目管理</span>
-        </el-menu-item>
-        <el-menu-item index="/admin/tags">
-          <span>标签管理</span>
-        </el-menu-item>
-        <el-menu-item index="/admin/contests">
-          <span>比赛管理</span>
-        </el-menu-item>
-        <el-menu-item index="/admin/playlists">
-          <span>题单管理</span>
-        </el-menu-item>
-        <el-menu-item index="/admin/teams">
-          <span>团队管理</span>
-        </el-menu-item>
-        <el-menu-item index="/admin/submissions">
-          <span>提交管理</span>
-        </el-menu-item>
-        <el-menu-item index="/admin/judges">
-          <span>判题节点</span>
-        </el-menu-item>
-        <el-menu-item index="/admin/ai-usage">
-          <span>AI 用量</span>
-        </el-menu-item>
-        <el-menu-item index="/admin/announcements">
-          <span>公告管理</span>
-        </el-menu-item>
-        <el-menu-item index="/admin/logs">
-          <span>运行日志</span>
+        <el-menu-item v-for="m in adminMenus" :key="m.index" :index="m.index">
+          <span>{{ m.label }}</span>
         </el-menu-item>
       </el-menu>
       <div class="admin-back">
         <el-button text size="small" @click="$router.push('/')">← 返回前台</el-button>
       </div>
     </el-aside>
+
+    <!-- 窄屏（≤768px）：侧栏收进抽屉，菜单项与桌面端完全一致 -->
+    <el-drawer v-model="mobileOpen" direction="ltr" size="78%" :with-header="false"
+               class="admin-nav-drawer">
+      <div class="admin-logo" @click="goHome">OJ 后台</div>
+      <el-menu router :default-active="route.path" class="admin-menu" @select="onMenuSelect">
+        <el-menu-item v-for="m in adminMenus" :key="m.index" :index="m.index">
+          <span>{{ m.label }}</span>
+        </el-menu-item>
+      </el-menu>
+      <div class="admin-back">
+        <el-button text size="small" @click="goHome">← 返回前台</el-button>
+      </div>
+    </el-drawer>
     <el-main class="admin-main">
       <router-view />
     </el-main>
@@ -56,9 +47,39 @@
 </template>
 
 <script setup lang="ts">
-import { useRoute } from 'vue-router'
+import { ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { Menu } from '@element-plus/icons-vue'
 
 const route = useRoute()
+const router = useRouter()
+
+// 窄屏（≤768px）抽屉菜单开关；桌面端侧栏常驻，此状态仅移动端使用
+const mobileOpen = ref(false)
+
+// 侧栏与抽屉共用同一份菜单定义，保证两端顺序与目标完全一致
+const adminMenus = [
+  { index: '/admin', label: '站点概况' },
+  { index: '/admin/users', label: '用户管理' },
+  { index: '/admin/problems', label: '题目管理' },
+  { index: '/admin/tags', label: '标签管理' },
+  { index: '/admin/contests', label: '比赛管理' },
+  { index: '/admin/playlists', label: '题单管理' },
+  { index: '/admin/teams', label: '团队管理' },
+  { index: '/admin/submissions', label: '提交管理' },
+  { index: '/admin/judges', label: '判题节点' },
+  { index: '/admin/ai-usage', label: 'AI 用量' },
+  { index: '/admin/announcements', label: '公告管理' },
+  { index: '/admin/logs', label: '运行日志' },
+]
+
+function onMenuSelect() {
+  mobileOpen.value = false
+}
+function goHome() {
+  mobileOpen.value = false
+  router.push('/')
+}
 </script>
 
 <style scoped>
@@ -218,5 +239,44 @@ const route = useRoute()
   border: 1px solid var(--oj-line);
   border-radius: var(--oj-r3);
   padding: var(--oj-s3) var(--oj-s4);
+}
+
+/* ===== 移动端（≤768px）：侧栏收进抽屉，顶替为一条移动工具条 ===== */
+.admin-mobile-bar {
+  display: none;
+  align-items: center;
+  gap: var(--oj-s2);
+  height: 48px;
+  padding: 0 var(--oj-s3);
+  border-bottom: 1px solid var(--oj-line);
+  background: var(--oj-surface-2);
+  flex-shrink: 0;
+}
+.admin-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r2);
+  background: var(--oj-surface);
+  color: var(--oj-ink-2);
+  cursor: pointer;
+}
+.admin-mobile-title {
+  font-family: var(--oj-font-display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--oj-ink);
+}
+.admin-mobile-spacer { flex: 1; }
+.admin-nav-drawer .admin-menu { border-right: none; }
+
+@media (max-width: 768px) {
+  .admin-layout { flex-direction: column; }
+  .admin-aside { display: none; }
+  .admin-mobile-bar { display: flex; }
+  .admin-main { flex: 1; min-height: 0; }
 }
 </style>

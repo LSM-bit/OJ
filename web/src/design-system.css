@@ -741,3 +741,122 @@ a:hover { color: var(--oj-accent); }
 .head-titles h2 { margin: 0; font-size: 26px; letter-spacing: -0.02em; }
 .head-ops { display: flex; align-items: center; gap: var(--oj-s2); flex-wrap: wrap; }
 .pager-row { display: flex; justify-content: flex-end; padding: var(--oj-s3) 0; }
+
+/* ------------------------------ 10. 响应式：移动端（≤768px）与触屏降级 */
+/*
+   断点体系（全站统一，页面 scoped 样式须与本节阈值保持一致）：
+     > 900px   桌面现状，不做任何改动
+     ≤ 900px   已有：Home / Login 单列化（各自 scoped media）
+     ≤ 768px   本节统一收口：顶栏与管理侧栏收进抽屉、视口单位改用 dvh、
+               表格解除固定高度 + 内建横向滚动、表单竖排、弹窗满宽、
+               触屏点击区放大与 hover 反馈降级
+   媒体查询内无法引用 CSS 变量，阈值以注释固化；如需调整须全站同步。
+   窄屏判定阈值统一取 768。
+*/
+@media (max-width: 768px) {
+  /* ---- 版面：收紧留白，页头 / 工具栏允许换行 ---- */
+  .oj-page,
+  .page {
+    padding: var(--oj-s4) var(--oj-s3) var(--oj-s6) !important;
+  }
+  .oj-page-head,
+  .page-head,
+  .head {
+    flex-wrap: wrap !important;
+    align-items: flex-start !important;
+    row-gap: var(--oj-s2) !important;
+  }
+  .head-titles h2,
+  .page-head h2,
+  .page-title {
+    font-size: 20px !important;
+  }
+  .head-ops,
+  .toolbar {
+    flex-wrap: wrap !important;
+    row-gap: var(--oj-s2) !important;
+  }
+  .pager-row,
+  .pager {
+    justify-content: center !important;
+  }
+
+  /* ---- 弹窗 / 消息框：满宽 + 正文区可滚，避免固定 px 宽度溢出 ---- */
+  .el-dialog {
+    --el-dialog-width: calc(100vw - 24px) !important;
+    --el-dialog-margin-top: 4vh !important;
+    max-height: calc(100vh - 8vh);
+    max-height: calc(100dvh - 8vh);
+    display: flex;
+    flex-direction: column;
+  }
+  .el-dialog__header { flex-shrink: 0; }
+  .el-dialog__body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--oj-s4) var(--oj-s3) !important;
+  }
+  .el-dialog__footer { flex-shrink: 0; }
+  .el-message-box {
+    --el-messagebox-width: calc(100vw - 32px) !important;
+    width: calc(100vw - 32px) !important;
+    max-width: 420px;
+  }
+
+  /* ---- 表单：标签上浮独占一行，输入区占满 ---- */
+  .el-form-item { display: block !important; margin-bottom: var(--oj-s4) !important; }
+  .el-form-item__label {
+    float: none !important;
+    display: block !important;
+    width: auto !important;
+    text-align: left !important;
+    padding: 0 0 var(--oj-s1) !important;
+    line-height: 1.5 !important;
+  }
+  .el-form-item__content { margin-left: 0 !important; }
+
+  /* ---- 表格：解除固定高度，正文区限高滚动；横向滚动交给 el-table 内建滚动条 ---- */
+  .el-table,
+  .el-table__inner-wrapper,
+  .el-table__header-wrapper,
+  .el-table__body-wrapper {
+    height: auto !important;
+  }
+  .el-table { max-height: none !important; }
+  .el-table__body-wrapper {
+    max-height: 62vh;
+    max-height: 62dvh;
+    overflow-y: auto;
+  }
+
+  /* ---- 触屏：放大点击区域 ---- */
+  html { -webkit-tap-highlight-color: transparent; }
+  .el-button { min-height: 34px; }
+  .el-menu-item,
+  .el-sub-menu__title { min-height: 44px; }
+  .el-pagination .el-pager li,
+  .el-pagination button { min-width: 36px; height: 36px; }
+  .el-dialog__headerbtn,
+  .el-drawer__close-btn { width: 40px; height: 40px; }
+  .el-tabs__item { padding: 0 14px; }
+}
+
+/* 触屏（无 hover 能力）：去掉上浮 / 阴影反馈，避免点击后状态“粘住” */
+@media (hover: none) {
+  .oj-hoverable:hover,
+  .stat-card:hover,
+  .node-card:hover,
+  .el-button:not(.is-disabled):not(.is-text):not(.is-link):hover {
+    transform: none !important;
+    box-shadow: none !important;
+  }
+}
+
+/* 移动端抽屉（App 顶栏导航 / 管理端侧栏）：内容区由抽屉内部自行控制内边距 */
+.oj-nav-drawer .el-drawer__body,
+.admin-nav-drawer .el-drawer__body {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}

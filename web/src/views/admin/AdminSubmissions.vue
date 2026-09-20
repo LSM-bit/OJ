@@ -20,7 +20,7 @@
         <el-button type="primary" @click="reload">刷新</el-button>
       </div>
     </header>
-    <el-table :data="items" v-loading="loading" height="calc(100vh - 262px)" size="small">
+    <el-table :data="items" v-loading="loading" height="calc(100dvh - 262px)" size="small">
       <el-table-column label="ID" width="180">
         <template #default="{ row }">
           <span class="mono-id" :title="row.id">{{ row.id }}</span>

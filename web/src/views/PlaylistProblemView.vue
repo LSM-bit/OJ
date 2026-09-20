@@ -288,4 +288,35 @@ async function submit() {
   color: var(--oj-ink-4);
 }
 .sample-pre { font-family: var(--oj-font-mono); }
+
+/* ---- 移动端（≤768px）：左右分栏堆叠为上下，编辑器保留确定高度 ---- */
+@media (max-width: 768px) {
+  .problem-page {
+    padding: 8px;
+    overflow-y: auto;   /* 堆叠后由页面整体纵向滚动 */
+  }
+  .split {
+    flex-direction: column;
+    gap: 8px;
+    height: auto;
+  }
+  .pane-left,
+  .pane-right {
+    flex: none;
+    width: 100%;
+    min-width: 0;
+  }
+  .pane-left.collapsed { flex: none; min-width: 0; }
+  /* 右侧工作台给确定高度，保证内部 flex 链（Monaco 编辑器）可渲染 */
+  .pane-right {
+    height: 68vh;
+    height: 68dvh;
+  }
+  .pane-head {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    padding: 8px 12px;
+  }
+  .pane-body { padding: 10px 12px; }
+}
 </style>

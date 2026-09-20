@@ -18,7 +18,7 @@
 
     <div class="section">
       <h4>最近提交</h4>
-      <el-table :data="pagedRecent" size="small" height="calc(100vh - 320px)">
+      <el-table :data="pagedRecent" size="small" height="calc(100dvh - 320px)">
         <el-table-column label="ID" width="180">
           <template #default="{ row }">
             <span class="mono-id" :title="row.id">{{ row.id }}</span>

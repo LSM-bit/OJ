@@ -16,7 +16,7 @@
         </el-button>
       </div>
     </header>
-    <el-table :data="pagedFiltered" v-loading="loading" height="calc(100vh - 218px)">
+    <el-table :data="pagedFiltered" v-loading="loading" height="calc(100dvh - 218px)">
       <el-table-column label="置顶" width="80">
         <template #default="{ row }">
           <el-tag v-if="row.top" size="small" type="danger" effect="dark">置顶</el-tag>

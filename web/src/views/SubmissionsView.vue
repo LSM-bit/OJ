@@ -19,7 +19,7 @@
       </div>
     </header>
 
-    <el-table :data="pagedItems" v-loading="loading" height="calc(100vh - 272px)"
+    <el-table :data="pagedItems" v-loading="loading" height="calc(100dvh - 272px)"
               class="click-table" @row-click="(row: any) => $router.push(`/submissions/${row.id}`)">
       <el-table-column label="ID" width="130">
         <template #default="{ row }">

@@ -7,6 +7,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useUserStore } from './stores/user'
 import AiAssistant from './components/AiAssistant.vue'
+import { Menu as MenuIcon } from '@element-plus/icons-vue'
 import { api } from './api/client'
 import { useClientPager } from './composables/useClientPager'
 import md from './utils/markdown'
@@ -40,6 +41,13 @@ const navItems = computed(() => {
   if (userStore.user?.role === 'admin') items.push({ path: '/admin', label: '管理' })
   return items
 })
+
+// 窄屏（≤768px）抽屉导航：桌面端顶栏导航完整展示，抽屉仅窄屏可打开
+const mobileNavOpen = ref(false)
+function goNav(path: string) {
+  mobileNavOpen.value = false
+  router.push(path)
+}
 
 // 刷新页面后用 localStorage 里的 token 恢复用户信息
 onMounted(() => {
@@ -103,6 +111,10 @@ function backToList() {
   <div class="shell">
     <!-- 顶栏：品牌 + 主导航 + 会话区 -->
     <header class="topbar">
+      <!-- 窄屏（≤768px）汉堡入口：桌面端隐藏，导航仍由 .nav 承担 -->
+      <button type="button" class="nav-toggle" aria-label="打开导航" @click="mobileNavOpen = true">
+        <el-icon :size="18"><MenuIcon /></el-icon>
+      </button>
       <div class="brand" role="link" tabindex="0"
            @click="router.push('/')" @keyup.enter="router.push('/')">
         <span class="brand-mark">衡</span>
@@ -151,6 +163,27 @@ function backToList() {
         <router-link v-else class="signin" to="/login">登录 / 注册</router-link>
       </div>
     </header>
+
+    <!-- 窄屏（≤768px）导航抽屉：条目与顶栏导航、登录态保持一致 -->
+    <el-drawer v-model="mobileNavOpen" direction="ltr" size="78%" :with-header="false"
+               class="oj-nav-drawer">
+      <div class="m-nav">
+        <div class="m-nav-brand">
+          <span class="brand-mark">衡</span>
+          <span class="brand-name">Online Judge</span>
+        </div>
+        <button v-for="item in navItems" :key="item.path" type="button" class="m-nav-item"
+                :class="{ active: activeMenu === item.path }" @click="goNav(item.path)">
+          {{ item.label }}
+        </button>
+        <button v-if="!userStore.isLoggedIn" type="button" class="m-nav-item"
+                @click="goNav('/login')">登录 / 注册</button>
+        <template v-if="userStore.isLoggedIn">
+          <button type="button" class="m-nav-item" @click="goNav('/profile')">个人中心</button>
+          <button type="button" class="m-nav-item" @click="mobileNavOpen = false; logout()">退出登录</button>
+        </template>
+      </div>
+    </el-drawer>
 
     <main class="main">
       <router-view v-slot="{ Component }">
@@ -202,6 +235,7 @@ function backToList() {
 <style scoped>
 .shell {
   height: 100vh;
+  height: 100dvh;   /* 移动端地址栏收起/展开时跟随动态视口，避免底部被裁切 */
   display: flex;
   flex-direction: column;
   background: var(--oj-paper);
@@ -418,4 +452,63 @@ function backToList() {
   margin-bottom: 10px;
 }
 .ann-content { max-height: 50vh; overflow-y: auto; }
+
+/* ------------------------------------ 移动端（≤768px）：导航收进抽屉 */
+.nav-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border: 1px solid var(--oj-line);
+  border-radius: var(--oj-r2);
+  background: var(--oj-surface);
+  color: var(--oj-ink-2);
+  cursor: pointer;
+}
+.nav-toggle:active { background: var(--oj-surface-2); }
+.m-nav { display: flex; flex-direction: column; }
+.m-nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 16px var(--oj-s4);
+  border-bottom: 1px solid var(--oj-line);
+}
+.m-nav-item {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  padding: 0 var(--oj-s4);
+  border: 0;
+  border-bottom: 1px solid var(--oj-line-soft);
+  background: none;
+  font-family: inherit;
+  font-size: var(--oj-fs-md);
+  color: var(--oj-ink-2);
+  text-align: left;
+  cursor: pointer;
+}
+.m-nav-item.active {
+  color: var(--oj-ink);
+  font-weight: 600;
+  background: color-mix(in oklab, var(--oj-accent) 6%, transparent);
+}
+
+@media (max-width: 768px) {
+  .nav-toggle { display: inline-flex; }
+  .topbar {
+    height: 52px;
+    gap: var(--oj-s2);
+    padding: 0 var(--oj-s3);
+  }
+  .nav { display: none; }          /* 导航改由抽屉承担 */
+  .brand-sub { display: none; }
+  .announce { padding: 0 10px; }
+  .announce-label { display: none; }
+  .user-name { display: none; }
+  .ann-list { max-height: none; }
+  .ann-content { max-height: none; }
+}
 </style>

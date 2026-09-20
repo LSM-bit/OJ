@@ -15,7 +15,7 @@
       </div>
     </header>
 
-    <el-table :data="pagedItems" v-loading="loading" height="calc(100vh - 218px)">
+    <el-table :data="pagedItems" v-loading="loading" height="calc(100dvh - 218px)">
       <el-table-column label="ID" width="180">
         <template #default="{ row }">
           <span class="mono-id" :title="row.id">{{ row.id }}</span>
