@@ -72,11 +72,11 @@ npm install && npm run dev   # http://localhost:5173
 - MinIO Console: http://localhost:9001（oju / oj_password）
 - 前端: http://localhost:5173
 
-生产（全容器化，唯一入口 nginx :80）：`http://域名/api/health`、`http://域名/api/health/judges`。
+生产（全容器化，唯一入口 nginx :80，站点挂在 `/oj/` 子路径）：`http://域名/oj/api/health`、`http://域名/oj/api/health/judges`。
 
 ## 生产部署
 
-API/前端/基础设施全部容器化 + nginx 同源反代（`/api/` 前缀），详见 [docs/服务器部署手册.md](docs/服务器部署手册.md)：
+API/前端/基础设施全部容器化 + nginx 同源反代（`/oj/api/` 前缀，站点入口 `/oj/`），详见 [docs/服务器部署手册.md](docs/服务器部署手册.md)：
 
 ```bash
 cd deploy

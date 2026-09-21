@@ -4,7 +4,8 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { useUserStore } from '../stores/user'
 
 const router = createRouter({
-  history: createWebHistory(),
+  // base 跟随 Vite 的 base（生产 = /oj/，dev = /），保证子路径部署下路由前缀一致
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     // 主页（独立首页：概览 + 每日打卡 + 快捷入口 + 最新题目）
     { path: '/', name: 'home', component: () => import('../views/HomeView.vue') },

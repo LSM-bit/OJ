@@ -29,7 +29,7 @@ services:
       context: ..
       dockerfile: deploy/web.Dockerfile
       args:
-        VITE_API_BASE: /api
+        VITE_API_BASE: /oj/api   # 前端 API 前缀（nginx 剥离 /oj/api/ 后转 api:8000）
     ports:
       - "80:80"
     depends_on:
@@ -38,7 +38,8 @@ services:
     networks: [ojnet]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      # 站点入口是子路径 /oj/（根路径 302 跳 /oj/，wget 会跟随重定向，这里直接打子路径更精确）
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/oj/"]
       interval: 10s
       timeout: 5s
       retries: 5

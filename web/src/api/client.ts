@@ -34,7 +34,8 @@ api.interceptors.response.use(
   (err) => {
     if (err.response?.status === 401) {
       localStorage.removeItem('oj_token')
-      window.location.href = '/login'
+      // 跳登录页同样要带子路径前缀（BASE_URL 生产 = /oj/，dev = /）
+      window.location.href = `${import.meta.env.BASE_URL}login`
     }
     return Promise.reject(err)
   },
