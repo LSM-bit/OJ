@@ -2,8 +2,18 @@
 # 用法（服务器）: docker compose -f docker-compose.yml -f compose.prod.yml up -d --build
 # compose 合并规则备忘：environment 映射按 key 覆盖（节点 SERVER_ADDRESS 被本文件
 # 覆盖为 api 服务名），ports/env_file 列表拼接；api 不发布任何端口——对外只有 web 的 80
+#
+# 容器命名约定（2026-09 起）：
+#   项目专属服务 web / api / judge-node / assistant-node 统一显式命名 deploy-oj-<服务名>，
+#   与可复用基础设施区分开（postgres / redis / minio 不设 container_name，仍随 project 前缀
+#   生成为 deploy-postgres-1 / deploy-redis-1 / deploy-minio-1，供其他项目共用同一套数据卷）。
+#   web/api 只存在于本 override，故名称写在这里；judge-node/assistant-node 在 base 中即存在，
+#   名称定义在 docker-compose.yml（dev/prod 同一个名字），生产不再重复声明。
+#   影响：显式 container_name 是全局唯一名、不再带 project 前缀，本机若再用 `-p ojprod`
+#   起第二套栈会重名冲突（详见 docs/服务器部署手册.md §8.5）。
 services:
   api:
+    container_name: deploy-oj-api
     build:
       context: ..
       dockerfile: deploy/api.Dockerfile
@@ -25,6 +35,7 @@ services:
           cpus: '0.50'
 
   web:
+    container_name: deploy-oj-web
     build:
       context: ..
       dockerfile: deploy/web.Dockerfile

@@ -21,5 +21,12 @@ fi
 
 echo "==> [3/3] 重建并启动服务"
 cd deploy
+# 迁移兼容（2026-09 容器改名，一次性生效，之后这段是空操作）：
+#   早期专属服务的容器名是自动生成的 deploy-<服务>-1；现在改为显式名 deploy-oj-<服务名>。
+#   compose 不会自动删掉旧名容器（project 标签相同但配置已不认识它们），而旧容器仍占着
+#   web 的 80 端口与网络别名，会导致新容器起不来。这里只删这 4 个专属服务容器：
+#   - 未加 -v、未 down，postgres/redis/minio 与数据卷完全不受影响（web/api 等无状态，重建即恢复）
+#   - 4 个名字都不存在时报错被忽略，不影响后续启动
+docker rm -f deploy-web-1 deploy-api-1 deploy-judge-node-1 deploy-assistant-node-1 2>/dev/null || true
 docker compose -f docker-compose.yml -f compose.prod.yml up -d --build
 docker compose -f docker-compose.yml -f compose.prod.yml ps

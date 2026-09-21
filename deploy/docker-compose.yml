@@ -3,6 +3,14 @@
 # 生产部署 = 本文件 + compose.prod.yml（override 追加 api/web 容器、节点改连 api 服务名），
 # 服务器上只用: docker compose -f docker-compose.yml -f compose.prod.yml up -d
 # 注意: compose 的 environment 优先级高于 env_file，密钥一律走 env_file 注入（api.env / judge-node.env / .env）
+#
+# 容器命名约定（2026-09 起）：
+#   项目专属服务 web / api / judge-node / assistant-node 统一显式命名 deploy-oj-<服务名>；
+#   可复用基础设施 postgres / redis / minio 不设 container_name，保留自动名 deploy-<服务>-1。
+#   judge-node / assistant-node 在 base 中已存在，故名称在此定义（dev/prod 同名）；
+#   web / api 只存在于 compose.prod.yml，其 container_name 写在那个文件里。
+#   显式名不带 project 前缀且全局唯一：本机 `-p ojprod` 并行起第二套栈会重名冲突，
+#   需先停掉另一套（详见 docs/环境搭建记录.md、docs/服务器部署手册.md §8.5）。
 services:
   postgres:
     image: postgres:16-alpine
@@ -87,6 +95,7 @@ services:
   # 判题节点（nsjail 沙箱，主动外连 API 网关 gRPC；dev 形态连宿主机 API）
   # 架构变化：节点从 Redis Stream 拉取任务（不再通过 gRPC 推送）
   judge-node:
+    container_name: deploy-oj-judge-node
     build:
       context: ..
       dockerfile: deploy/judge-node.Dockerfile
@@ -112,6 +121,7 @@ services:
   # ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL / SERVER_TOKEN 经 env_file 从 deploy/.env 注入，
   # 绝不写死进 compose/git；.env 已被 gitignore
   assistant-node:
+    container_name: deploy-oj-assistant-node
     build:
       context: ..
       dockerfile: deploy/assistant-node.Dockerfile

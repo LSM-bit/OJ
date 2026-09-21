@@ -86,6 +86,13 @@ cd .. && docker build -f deploy/judge-base.Dockerfile -t oj-judge-base:24.04 .  
 cd deploy && docker compose -f docker-compose.yml -f compose.prod.yml up -d --build
 ```
 
+容器命名：项目专属服务使用显式容器名 `deploy-oj-web` / `deploy-oj-api` / `deploy-oj-judge-node` /
+`deploy-oj-assistant-node`；postgres / redis / minio 不设 `container_name`，保留自动名
+`deploy-<服务>-1`（便于被其他项目复用同一套基础设施）。**已有的旧部署首次更新前要先删旧容器**
+（`deploy-web-1` 等会占着 80 端口）：`docker rm -f deploy-web-1 deploy-api-1 deploy-judge-node-1
+deploy-assistant-node-1`（`bash deploy/update.sh` 已内置此步），细节见
+[docs/服务器部署手册.md](docs/服务器部署手册.md) §8.5。
+
 判题节点拆成两层镜像：`oj-judge-base:24.04`（工具链 / JDK21 / nsjail / gRPC，构建一次约 5~15 分钟），上层 `judge-node` 只 COPY 代码配置，重建几秒。基础镜像变了才需要 `--base` 重建：
 
 ```bash
