@@ -11,6 +11,13 @@
 #   web / api 只存在于 compose.prod.yml，其 container_name 写在那个文件里。
 #   显式名不带 project 前缀且全局唯一：本机 `-p ojprod` 并行起第二套栈会重名冲突，
 #   需先停掉另一套（详见 docs/环境搭建记录.md、docs/服务器部署手册.md §8.5）。
+#
+# 项目名（2026-09 起显式声明）：与 GridGo 同机部署时，compose 默认按目录名推断项目名，
+# 目录一旦改名或撞名，网络/卷/容器会被并入同一 project 造成互顶（GridGo 事故同源）。
+# 此处固定为 deploy：与历史默认值完全一致，deploy_ojnet / deploy_pgdata / deploy-web 等
+# 资源名均不变，已有栈无需重建；注意显式 name 会覆盖 `-p` 参数。
+name: deploy
+
 services:
   postgres:
     image: postgres:16-alpine
